@@ -199,7 +199,7 @@ export interface Database {
           payment_method: string | null;
           status: 'pending' | 'completed' | 'failed' | 'cancelled';
           description: string | null;
-          metadata: any | null;
+          metadata: Record<string, unknown> | null;
           created_at: string;
         };
         Insert: {
@@ -222,7 +222,7 @@ export interface Database {
           payment_method?: string | null;
           status?: 'pending' | 'completed' | 'failed' | 'cancelled';
           description?: string | null;
-          metadata?: any | null;
+          metadata?: Record<string, unknown> | null;
           created_at?: string;
         };
         Update: {
@@ -245,7 +245,7 @@ export interface Database {
           payment_method?: string | null;
           status?: 'pending' | 'completed' | 'failed' | 'cancelled';
           description?: string | null;
-          metadata?: any | null;
+          metadata?: Record<string, unknown> | null;
           created_at?: string;
         };
       };

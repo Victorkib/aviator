@@ -1,5 +1,6 @@
 import { Redis } from '@upstash/redis';
 
+// Remove the env.mjs import and use process.env directly
 if (
   !process.env.UPSTASH_REDIS_REST_URL ||
   !process.env.UPSTASH_REDIS_REST_TOKEN
@@ -23,6 +24,41 @@ export const CACHE_KEYS = {
   LEADERBOARD: (period: string) => `leaderboard:${period}`,
   GAME_STATS: 'game:stats',
 } as const;
+
+// Define proper types for cached data
+interface UserProfile {
+  id: string;
+  username?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  balance: number;
+  status: string;
+}
+
+interface GameRoundData {
+  id: string;
+  roundNumber: number;
+  crashMultiplier: number;
+  phase: string;
+  totalBets: number;
+  totalWagered: number;
+}
+
+interface GameStats {
+  totalRounds: number;
+  totalPlayers: number;
+  totalWagered: number;
+  averageMultiplier: number;
+  lastUpdated: string;
+}
+
+interface SessionData {
+  userId: string;
+  email: string;
+  username?: string;
+  loginTime: string;
+  lastActivity: string;
+}
 
 // Cache utilities for common operations
 export class CacheManager {
@@ -62,10 +98,10 @@ export class CacheManager {
   }
 
   // User profile caching
-  static async getUserProfile(userId: string): Promise<any | null> {
+  static async getUserProfile(userId: string): Promise<UserProfile | null> {
     try {
       const cached = await redis.get(CACHE_KEYS.USER_PROFILE(userId));
-      return cached ? JSON.parse(cached as string) : null;
+      return cached ? (JSON.parse(cached as string) as UserProfile) : null;
     } catch (error) {
       console.error('Redis getUserProfile error:', error);
       return null;
@@ -74,7 +110,7 @@ export class CacheManager {
 
   static async setUserProfile(
     userId: string,
-    profile: any,
+    profile: UserProfile,
     ttl = 600
   ): Promise<void> {
     try {
@@ -91,7 +127,7 @@ export class CacheManager {
   // Game round caching
   static async cacheGameRound(
     roundId: string,
-    roundData: any,
+    roundData: GameRoundData,
     ttl = 3600
   ): Promise<void> {
     try {
@@ -105,10 +141,10 @@ export class CacheManager {
     }
   }
 
-  static async getGameRound(roundId: string): Promise<any | null> {
+  static async getGameRound(roundId: string): Promise<GameRoundData | null> {
     try {
       const cached = await redis.get(CACHE_KEYS.GAME_ROUND(roundId));
-      return cached ? JSON.parse(cached as string) : null;
+      return cached ? (JSON.parse(cached as string) as GameRoundData) : null;
     } catch (error) {
       console.error('Redis getGameRound error:', error);
       return null;
@@ -150,7 +186,7 @@ export class CacheManager {
   // Session management
   static async setUserSession(
     sessionId: string,
-    userData: any,
+    userData: SessionData,
     ttl = 86400
   ): Promise<void> {
     try {
@@ -164,10 +200,10 @@ export class CacheManager {
     }
   }
 
-  static async getUserSession(sessionId: string): Promise<any | null> {
+  static async getUserSession(sessionId: string): Promise<SessionData | null> {
     try {
       const cached = await redis.get(CACHE_KEYS.USER_SESSION(sessionId));
-      return cached ? JSON.parse(cached as string) : null;
+      return cached ? (JSON.parse(cached as string) as SessionData) : null;
     } catch (error) {
       console.error('Redis getUserSession error:', error);
       return null;
@@ -183,7 +219,7 @@ export class CacheManager {
   }
 
   // Game statistics caching
-  static async updateGameStats(stats: any, ttl = 300): Promise<void> {
+  static async updateGameStats(stats: GameStats, ttl = 300): Promise<void> {
     try {
       await redis.setex(CACHE_KEYS.GAME_STATS, ttl, JSON.stringify(stats));
     } catch (error) {
@@ -191,13 +227,68 @@ export class CacheManager {
     }
   }
 
-  static async getGameStats(): Promise<any | null> {
+  static async getGameStats(): Promise<GameStats | null> {
     try {
       const cached = await redis.get(CACHE_KEYS.GAME_STATS);
-      return cached ? JSON.parse(cached as string) : null;
+      return cached ? (JSON.parse(cached as string) as GameStats) : null;
     } catch (error) {
       console.error('Redis getGameStats error:', error);
       return null;
+    }
+  }
+
+  // Store player bet data (fix for the hset issue)
+  static async setPlayerBet(
+    roundId: string,
+    userId: string,
+    betData: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      const key = CACHE_KEYS.ACTIVE_BETS(roundId);
+      // Use hset with field-value pairs for Upstash Redis
+      await redis.hset(key, { [userId]: JSON.stringify(betData) });
+    } catch (error) {
+      console.error('Redis setPlayerBet error:', error);
+    }
+  }
+
+  static async getPlayerBet(
+    roundId: string,
+    userId: string
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const key = CACHE_KEYS.ACTIVE_BETS(roundId);
+      const cached = await redis.hget(key, userId);
+      return cached
+        ? (JSON.parse(cached as string) as Record<string, unknown>)
+        : null;
+    } catch (error) {
+      console.error('Redis getPlayerBet error:', error);
+      return null;
+    }
+  }
+
+  static async getAllPlayerBets(
+    roundId: string
+  ): Promise<Record<string, Record<string, unknown>>> {
+    try {
+      const key = CACHE_KEYS.ACTIVE_BETS(roundId);
+      const cached = await redis.hgetall(key);
+      const result: Record<string, Record<string, unknown>> = {};
+
+      if (cached) {
+        for (const [userId, betDataStr] of Object.entries(cached)) {
+          result[userId] = JSON.parse(betDataStr as string) as Record<
+            string,
+            unknown
+          >;
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Redis getAllPlayerBets error:', error);
+      return {};
     }
   }
 

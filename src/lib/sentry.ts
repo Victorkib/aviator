@@ -41,19 +41,67 @@ Sentry.init({
   },
 });
 
+// Define proper types for error contexts with index signatures
+interface GameErrorContext {
+  userId?: string;
+  roundId?: string;
+  action?: string;
+  gamePhase?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
+interface FinancialErrorContext {
+  userId: string;
+  transactionType: string;
+  amount: number;
+  balanceBefore?: number;
+  balanceAfter?: number;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
+interface AuthErrorContext {
+  provider?: string;
+  userId?: string;
+  email?: string;
+  action?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
+interface SecurityEventContext {
+  ip?: string;
+  userId?: string;
+  userAgent?: string;
+  action?: string;
+  severity?: 'low' | 'medium' | 'high';
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
+interface DatabaseErrorContext {
+  query?: string;
+  table?: string;
+  operation?: string;
+  userId?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
+interface PerformanceContext {
+  operation: string;
+  duration: number;
+  threshold: number;
+  userId?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown; // Add index signature for Sentry compatibility
+}
+
 // Custom error reporting utilities for different types of errors
 export class ErrorReporter {
   // Game-related errors
-  static reportGameError(
-    error: Error,
-    context: {
-      userId?: string;
-      roundId?: string;
-      action?: string;
-      gamePhase?: string;
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportGameError(error: Error, context: GameErrorContext) {
     Sentry.withScope((scope) => {
       scope.setTag('error_type', 'game_error');
       scope.setTag('game_phase', context.gamePhase || 'unknown');
@@ -69,17 +117,7 @@ export class ErrorReporter {
   }
 
   // Financial transaction errors (high priority)
-  static reportFinancialError(
-    error: Error,
-    context: {
-      userId: string;
-      transactionType: string;
-      amount: number;
-      balanceBefore?: number;
-      balanceAfter?: number;
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportFinancialError(error: Error, context: FinancialErrorContext) {
     Sentry.withScope((scope) => {
       scope.setTag('error_type', 'financial_error');
       scope.setTag('transaction_type', context.transactionType);
@@ -96,16 +134,7 @@ export class ErrorReporter {
   }
 
   // Authentication errors
-  static reportAuthError(
-    error: Error,
-    context: {
-      provider?: string;
-      userId?: string;
-      email?: string;
-      action?: string;
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportAuthError(error: Error, context: AuthErrorContext) {
     Sentry.withScope((scope) => {
       scope.setTag('error_type', 'auth_error');
       scope.setTag('auth_provider', context.provider || 'unknown');
@@ -122,17 +151,7 @@ export class ErrorReporter {
   }
 
   // Security events (suspicious activity)
-  static reportSecurityEvent(
-    event: string,
-    context: {
-      ip?: string;
-      userId?: string;
-      userAgent?: string;
-      action?: string;
-      severity?: 'low' | 'medium' | 'high';
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportSecurityEvent(event: string, context: SecurityEventContext) {
     Sentry.withScope((scope) => {
       scope.setTag('event_type', 'security_event');
       scope.setTag('security_severity', context.severity || 'medium');
@@ -152,16 +171,7 @@ export class ErrorReporter {
   }
 
   // Database errors
-  static reportDatabaseError(
-    error: Error,
-    context: {
-      query?: string;
-      table?: string;
-      operation?: string;
-      userId?: string;
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportDatabaseError(error: Error, context: DatabaseErrorContext) {
     Sentry.withScope((scope) => {
       scope.setTag('error_type', 'database_error');
       scope.setTag('db_table', context.table || 'unknown');
@@ -183,16 +193,7 @@ export class ErrorReporter {
   }
 
   // Performance issues
-  static reportPerformanceIssue(
-    message: string,
-    context: {
-      operation: string;
-      duration: number;
-      threshold: number;
-      userId?: string;
-      metadata?: Record<string, any>;
-    }
-  ) {
+  static reportPerformanceIssue(message: string, context: PerformanceContext) {
     Sentry.withScope((scope) => {
       scope.setTag('issue_type', 'performance');
       scope.setTag('operation', context.operation);
@@ -208,19 +209,16 @@ export class ErrorReporter {
   }
 }
 
-// Performance monitoring helper
-export function measurePerformance<T>(
-  operation: string,
-  threshold = 1000 // ms
-) {
+// Performance monitoring helper (removed unused generic type)
+export function measurePerformance(operation: string, threshold = 1000) {
   return (
-    target: any,
+    target: unknown,
     propertyName: string,
     descriptor: PropertyDescriptor
   ) => {
     const method = descriptor.value;
 
-    descriptor.value = async function (...args: any[]) {
+    descriptor.value = async function (...args: unknown[]) {
       const startTime = Date.now();
 
       try {

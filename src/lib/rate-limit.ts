@@ -46,7 +46,8 @@ function getClientIP(request: NextRequest): string {
   if (realIP) return realIP;
   if (forwarded) return forwarded.split(',')[0].trim();
 
-  return request.ip || 'unknown';
+  // NextRequest doesn't have .ip property, use 'unknown' as fallback
+  return 'unknown';
 }
 
 // Middleware helper for creating rate limit responses

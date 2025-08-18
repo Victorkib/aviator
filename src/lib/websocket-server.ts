@@ -1,6 +1,6 @@
 import { Server as SocketIOServer } from 'socket.io';
 import type { Server as HTTPServer } from 'http';
-import { redis } from './redis';
+import { CacheManager } from './redis';
 import { supabaseAdmin } from './supabase';
 
 export interface GameState {
@@ -21,6 +21,7 @@ export interface PlayerBet {
   autoCashout?: number;
   cashedOut: boolean;
   cashoutMultiplier?: number;
+  [key: string]: unknown; // Add index signature for Redis compatibility
 }
 
 export class GameWebSocketServer {
@@ -73,7 +74,7 @@ export class GameWebSocketServer {
         }) => {
           try {
             await this.handlePlayerBet(socket, data);
-          } catch (error) {
+          } catch {
             socket.emit('bet-error', { message: 'Failed to place bet' });
           }
         }
@@ -83,7 +84,7 @@ export class GameWebSocketServer {
       socket.on('cashout', async (data: { userId: string }) => {
         try {
           await this.handleCashout(socket, data);
-        } catch (error) {
+        } catch {
           socket.emit('cashout-error', { message: 'Failed to cashout' });
         }
       });
@@ -94,7 +95,7 @@ export class GameWebSocketServer {
         async (data: { userId: string; message: string }) => {
           try {
             await this.handleChatMessage(data);
-          } catch (error) {
+          } catch {
             socket.emit('chat-error', { message: 'Failed to send message' });
           }
         }
@@ -107,18 +108,26 @@ export class GameWebSocketServer {
   }
 
   private async handlePlayerBet(
-    socket: any,
+    socket: unknown,
     data: { userId: string; amount: number; autoCashout?: number }
   ) {
     // Validate betting phase
     if (this.currentGameState.phase !== 'betting') {
-      socket.emit('bet-error', { message: 'Betting is closed' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'bet-error',
+        { message: 'Betting is closed' }
+      );
       return;
     }
 
     // Check if user already has a bet
     if (this.activeBets.has(data.userId)) {
-      socket.emit('bet-error', { message: 'You already have an active bet' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'bet-error',
+        {
+          message: 'You already have an active bet',
+        }
+      );
       return;
     }
 
@@ -130,7 +139,12 @@ export class GameWebSocketServer {
       .single();
 
     if (!user || user.balance < data.amount) {
-      socket.emit('bet-error', { message: 'Insufficient balance' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'bet-error',
+        {
+          message: 'Insufficient balance',
+        }
+      );
       return;
     }
 
@@ -144,7 +158,12 @@ export class GameWebSocketServer {
     });
 
     if (error) {
-      socket.emit('bet-error', { message: 'Failed to process bet' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'bet-error',
+        {
+          message: 'Failed to process bet',
+        }
+      );
       return;
     }
 
@@ -167,26 +186,39 @@ export class GameWebSocketServer {
     // Broadcast updates
     this.io.emit('game-state', this.currentGameState);
     this.io.emit('new-bet', playerBet);
-    socket.emit('bet-confirmed', playerBet);
+    (socket as { emit: (event: string, data: unknown) => void }).emit(
+      'bet-confirmed',
+      playerBet
+    );
 
-    // Cache in Redis
-    await redis.hset(
-      `round:${this.currentGameState.roundId}:bets`,
+    // Cache in Redis using the fixed method - now playerBet has index signature
+    await CacheManager.setPlayerBet(
+      this.currentGameState.roundId,
       data.userId,
-      JSON.stringify(playerBet)
+      playerBet
     );
   }
 
-  private async handleCashout(socket: any, data: { userId: string }) {
+  private async handleCashout(socket: unknown, data: { userId: string }) {
     // Validate flying phase
     if (this.currentGameState.phase !== 'flying') {
-      socket.emit('cashout-error', { message: 'Cannot cashout now' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'cashout-error',
+        {
+          message: 'Cannot cashout now',
+        }
+      );
       return;
     }
 
     const playerBet = this.activeBets.get(data.userId);
     if (!playerBet || playerBet.cashedOut) {
-      socket.emit('cashout-error', { message: 'No active bet found' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'cashout-error',
+        {
+          message: 'No active bet found',
+        }
+      );
       return;
     }
 
@@ -208,7 +240,12 @@ export class GameWebSocketServer {
     });
 
     if (error) {
-      socket.emit('cashout-error', { message: 'Failed to process cashout' });
+      (socket as { emit: (event: string, data: unknown) => void }).emit(
+        'cashout-error',
+        {
+          message: 'Failed to process cashout',
+        }
+      );
       return;
     }
 
@@ -232,18 +269,20 @@ export class GameWebSocketServer {
       multiplier: this.currentGameState.multiplier,
       payout: payout,
     });
+    (socket as { emit: (event: string, data: unknown) => void }).emit(
+      'cashout-success',
+      {
+        multiplier: this.currentGameState.multiplier,
+        payout: payout,
+        profit: profit,
+      }
+    );
 
-    socket.emit('cashout-success', {
-      multiplier: this.currentGameState.multiplier,
-      payout: payout,
-      profit: profit,
-    });
-
-    // Update Redis
-    await redis.hset(
-      `round:${this.currentGameState.roundId}:bets`,
+    // Update Redis using the fixed method - now playerBet has index signature
+    await CacheManager.setPlayerBet(
+      this.currentGameState.roundId,
       data.userId,
-      JSON.stringify(playerBet)
+      playerBet
     );
   }
 

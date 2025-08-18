@@ -156,10 +156,7 @@ export async function healthCheck() {
   try {
     // Check database connection
     const { supabase } = await import('./supabase');
-    const { data, error } = await supabase
-      .from('users')
-      .select('count')
-      .limit(1);
+    const { error } = await supabase.from('users').select('count').limit(1);
     checks.database = !error;
   } catch (error) {
     console.error('Database health check failed:', error);

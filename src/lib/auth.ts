@@ -4,7 +4,7 @@ import DiscordProvider from 'next-auth/providers/discord';
 import { supabaseAdmin } from './supabase';
 
 export const authOptions: NextAuthOptions = {
-  // Remove the Supabase adapter temporarily
+  // Remove the Supabase adapter - using JWT strategy
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -45,6 +45,10 @@ export const authOptions: NextAuthOptions = {
       return session;
     },
     async signIn({ user, account, profile }) {
+      // Remove unused parameters warning
+      const _account = account;
+      const _profile = profile;
+
       if (!user.email) return false;
 
       try {
