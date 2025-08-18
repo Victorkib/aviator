@@ -440,7 +440,7 @@ export class GameWebSocketServer {
   }
 
   private async processAutoCashouts() {
-    const supabaseAdmin = getSupabaseAdmin();
+    // const supabaseAdmin = getSupabaseAdmin();
 
     for (const [userId, bet] of this.activeBets.entries()) {
       if (
