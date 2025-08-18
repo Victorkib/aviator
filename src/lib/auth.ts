@@ -1,10 +1,9 @@
 import type { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import DiscordProvider from 'next-auth/providers/discord';
-import { supabaseAdmin } from './supabase';
+import { getSupabaseAdmin } from './supabase';
 
 export const authOptions: NextAuthOptions = {
-  // Remove the Supabase adapter - using JWT strategy
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -29,17 +28,23 @@ export const authOptions: NextAuthOptions = {
       if (token && session.user) {
         session.user.id = token.id as string;
 
-        // Get user data from our custom users table
-        const { data: userData } = await supabaseAdmin
-          .from('users')
-          .select('username, balance, status')
-          .eq('email', session.user.email)
-          .single();
+        try {
+          // Get user data from our custom users table
+          const supabaseAdmin = getSupabaseAdmin();
+          const { data: userData } = await supabaseAdmin
+            .from('users')
+            .select('username, balance, status')
+            .eq('email', session.user.email)
+            .single();
 
-        if (userData) {
-          session.user.username = userData.username;
-          session.user.balance = userData.balance;
-          session.user.status = userData.status;
+          if (userData) {
+            session.user.username = userData.username;
+            session.user.balance = userData.balance;
+            session.user.status = userData.status;
+          }
+        } catch (error) {
+          console.error('Error fetching user data:', error);
+          // Continue without user data if there's an error
         }
       }
       return session;
@@ -52,6 +57,8 @@ export const authOptions: NextAuthOptions = {
       if (!user.email) return false;
 
       try {
+        const supabaseAdmin = getSupabaseAdmin();
+
         // Check if user exists in our custom table
         const { data: existingUser } = await supabaseAdmin
           .from('users')

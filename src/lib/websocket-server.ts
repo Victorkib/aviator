@@ -1,7 +1,7 @@
 import { Server as SocketIOServer } from 'socket.io';
 import type { Server as HTTPServer } from 'http';
 import { CacheManager } from './redis';
-import { supabaseAdmin } from './supabase';
+import { getSupabaseAdmin } from './supabase';
 
 export interface GameState {
   roundId: string;
@@ -111,6 +111,8 @@ export class GameWebSocketServer {
     socket: unknown,
     data: { userId: string; amount: number; autoCashout?: number }
   ) {
+    const supabaseAdmin = getSupabaseAdmin();
+
     // Validate betting phase
     if (this.currentGameState.phase !== 'betting') {
       (socket as { emit: (event: string, data: unknown) => void }).emit(
@@ -200,6 +202,8 @@ export class GameWebSocketServer {
   }
 
   private async handleCashout(socket: unknown, data: { userId: string }) {
+    const supabaseAdmin = getSupabaseAdmin();
+
     // Validate flying phase
     if (this.currentGameState.phase !== 'flying') {
       (socket as { emit: (event: string, data: unknown) => void }).emit(
@@ -287,6 +291,8 @@ export class GameWebSocketServer {
   }
 
   private async handleChatMessage(data: { userId: string; message: string }) {
+    const supabaseAdmin = getSupabaseAdmin();
+
     // Get user info
     const { data: user } = await supabaseAdmin
       .from('users')
@@ -322,6 +328,8 @@ export class GameWebSocketServer {
   }
 
   private async scheduleNextRound() {
+    const supabaseAdmin = getSupabaseAdmin();
+
     // Generate new round
     const roundId = crypto.randomUUID();
     const serverSeed = crypto.randomUUID();
@@ -432,6 +440,8 @@ export class GameWebSocketServer {
   }
 
   private async processAutoCashouts() {
+    const supabaseAdmin = getSupabaseAdmin();
+
     for (const [userId, bet] of this.activeBets.entries()) {
       if (
         !bet.cashedOut &&
@@ -445,6 +455,8 @@ export class GameWebSocketServer {
   }
 
   private async crashRound(crashPoint: number) {
+    const supabaseAdmin = getSupabaseAdmin();
+
     this.currentGameState.phase = 'crashed';
     this.currentGameState.multiplier = crashPoint;
 
