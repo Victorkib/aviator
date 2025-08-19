@@ -11,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { LoadingSpinner } from '@/components/ui/loading-spinner';
 
 export default function SignInPage() {
   const router = useRouter();
@@ -46,13 +47,14 @@ export default function SignInPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
-      <Card className="w-full max-w-md">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-blue-950 dark:to-indigo-950">
+      <Card className="w-full max-w-md border-gray-200 dark:border-gray-700">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl font-bold">
+          <div className="text-6xl mb-4">✈️</div>
+          <CardTitle className="text-2xl font-bold text-gray-900 dark:text-white">
             Welcome to Aviator
           </CardTitle>
-          <CardDescription>
+          <CardDescription className="text-gray-600 dark:text-gray-400">
             Sign in to start playing the ultimate crash game
           </CardDescription>
         </CardHeader>
@@ -65,7 +67,7 @@ export default function SignInPage() {
           >
             {loading === 'google' ? (
               <div className="flex items-center space-x-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
+                <LoadingSpinner size="sm" />
                 <span>Signing in...</span>
               </div>
             ) : (
@@ -96,11 +98,11 @@ export default function SignInPage() {
           <Button
             onClick={() => handleSignIn('discord')}
             disabled={loading !== null}
-            className="w-full bg-[#5865F2] hover:bg-[#4752C4]"
+            className="w-full bg-[#5865F2] hover:bg-[#4752C4] dark:bg-[#5865F2] dark:hover:bg-[#4752C4]"
           >
             {loading === 'discord' ? (
               <div className="flex items-center space-x-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <LoadingSpinner size="sm" />
                 <span>Signing in...</span>
               </div>
             ) : (
@@ -117,7 +119,7 @@ export default function SignInPage() {
             )}
           </Button>
 
-          <div className="text-center text-sm text-gray-600">
+          <div className="text-center text-sm text-gray-600 dark:text-gray-400">
             By signing in, you agree to our Terms of Service and Privacy Policy
           </div>
         </CardContent>
