@@ -1,21 +1,7 @@
-import { createClient } from '@supabase/supabase-js';
-import { CacheManager } from './redis';
-import type { Database } from '@/types/database';
+import { getSupabaseAdmin } from '@/lib/supabase';
+import { CacheManager } from '@/lib/redis';
+import { createHash, randomBytes } from 'crypto';
 
-// Game configuration constants
-export const GAME_CONFIG = {
-  BETTING_DURATION_MS: 10000, // 10 seconds
-  MIN_FLIGHT_DURATION_MS: 1000, // 1 second minimum
-  MAX_FLIGHT_DURATION_MS: 60000, // 60 seconds maximum
-  MIN_BET_AMOUNT: 1.0,
-  MAX_BET_AMOUNT: 1000.0,
-  MIN_MULTIPLIER: 1.01,
-  MAX_MULTIPLIER: 1000.0,
-  HOUSE_EDGE: 0.01, // 1%
-  AUTO_CASHOUT_PRECISION: 0.01,
-} as const;
-
-// Game phase enum
 export enum GamePhase {
   PREPARING = 'preparing',
   BETTING = 'betting',
@@ -23,7 +9,6 @@ export enum GamePhase {
   CRASHED = 'crashed',
 }
 
-// Game state interface
 export interface GameState {
   roundId: string;
   roundNumber: number;
@@ -31,20 +16,17 @@ export interface GameState {
   multiplier: number;
   timeElapsed: number;
   bettingTimeLeft: number;
-  crashMultiplier: number;
+  crashMultiplier?: number;
   totalBets: number;
   totalWagered: number;
   activePlayers: number;
-  serverSeed: string;
   serverSeedHash: string;
   clientSeed: string;
   nonce: number;
   startedAt: Date;
-  bettingEndsAt: Date;
-  crashedAt?: Date;
+  bettingEndsAt?: Date;
 }
 
-// Player bet interface
 export interface PlayerBet {
   id: string;
   userId: string;
@@ -59,679 +41,468 @@ export interface PlayerBet {
   createdAt: Date;
 }
 
-// Game round result interface
-export interface GameRoundResult {
-  roundId: string;
-  crashMultiplier: number;
-  totalBets: number;
-  totalWagered: number;
-  totalPaidOut: number;
-  winners: Array<{
-    userId: string;
-    username: string;
-    betAmount: number;
-    cashoutMultiplier: number;
-    payout: number;
-    profit: number;
-  }>;
-  losers: Array<{
-    userId: string;
-    username: string;
-    betAmount: number;
-    loss: number;
-  }>;
-}
-
 export class GameEngine {
-  private supabase: ReturnType<typeof createClient<Database>>;
-  private currentState: GameState | null = null;
-  private activeBets: Map<string, PlayerBet> = new Map();
-  private gameTimer: NodeJS.Timeout | null = null;
-  private subscribers: Set<(state: GameState) => void> = new Set();
+  private currentRound: GameState | null = null;
+  private isRunning = false;
+  private roundTimer: NodeJS.Timeout | null = null;
+  private multiplierTimer: NodeJS.Timeout | null = null;
+  private bettingTimer: NodeJS.Timeout | null = null;
 
-  constructor(supabaseUrl: string, supabaseServiceKey: string) {
-    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+  constructor() {
+    this.initializeEngine();
   }
 
-  // Subscribe to game state changes
-  public subscribe(callback: (state: GameState) => void): () => void {
-    this.subscribers.add(callback);
+  private async initializeEngine() {
+    console.log('🎮 Initializing Game Engine...');
 
-    // Send current state immediately if available
-    if (this.currentState) {
-      callback(this.currentState);
-    }
+    // Load current round from database
+    await this.loadCurrentRound();
 
-    // Return unsubscribe function
-    return () => {
-      this.subscribers.delete(callback);
-    };
+    // Start the game loop
+    this.startGameLoop();
   }
 
-  // Broadcast state to all subscribers
-  private broadcastState(): void {
-    if (this.currentState) {
-      this.subscribers.forEach((callback) => callback(this.currentState!));
-    }
-  }
-
-  // Generate cryptographically secure seeds
-  private async generateSeeds(): Promise<{
-    serverSeed: string;
-    serverSeedHash: string;
-    clientSeed: string;
-    nonce: number;
-  }> {
-    const serverSeed = crypto.randomUUID() + crypto.randomUUID();
-    const clientSeed = `client_${Date.now()}_${Math.random()
-      .toString(36)
-      .substring(2)}`;
-    const nonce = Math.floor(Math.random() * 1000000);
-
+  private async loadCurrentRound() {
     try {
-      // Create hash of server seed for transparency
-      const encoder = new TextEncoder();
-      const data = encoder.encode(serverSeed);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const serverSeedHash = hashArray
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
+      const supabase = getSupabaseAdmin();
 
-      return {
-        serverSeed,
-        serverSeedHash,
-        clientSeed,
-        nonce,
-      };
-    } catch {
-      // Fallback for environments without crypto.subtle
-      const serverSeedHash = btoa(serverSeed).substring(0, 64);
-      return {
-        serverSeed,
-        serverSeedHash,
-        clientSeed,
-        nonce,
-      };
-    }
-  }
-
-  // Calculate crash point using provably fair algorithm
-  public static calculateCrashPoint(
-    serverSeed: string,
-    clientSeed: string,
-    nonce: number
-  ): number {
-    // Create combined seed
-    const combinedSeed = `${serverSeed}:${clientSeed}:${nonce}`;
-
-    // Simple hash function for demo (in production, use proper crypto)
-    let hash = 0;
-    for (let i = 0; i < combinedSeed.length; i++) {
-      const char = combinedSeed.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-
-    // Convert to positive number and normalize
-    const normalized = Math.abs(hash) / Math.pow(2, 31);
-
-    // 1% chance of instant crash (house edge)
-    if (normalized < GAME_CONFIG.HOUSE_EDGE) {
-      return 1.0;
-    }
-
-    // Calculate crash point with exponential distribution
-    const crashPoint = 1 / (1 - normalized * (1 - GAME_CONFIG.HOUSE_EDGE));
-
-    // Clamp to reasonable bounds
-    return Math.max(
-      GAME_CONFIG.MIN_MULTIPLIER,
-      Math.min(GAME_CONFIG.MAX_MULTIPLIER, Math.floor(crashPoint * 100) / 100)
-    );
-  }
-
-  // Get game statistics
-  public async getGameStats(): Promise<{
-    totalRounds: number;
-    totalPlayers: number;
-    totalWagered: number;
-    averageMultiplier: number;
-    highestMultiplier: number;
-  }> {
-    try {
-      const { data: statsData } = await this.supabase.rpc(
-        'get_game_statistics'
+      const { data: roundData, error } = await supabase.rpc(
+        'get_current_game_state'
       );
-      const stats = statsData && statsData.length > 0 ? statsData[0] : null;
 
-      return {
-        totalRounds: stats?.total_rounds || 0,
-        totalPlayers: stats?.total_players || 0,
-        totalWagered: stats?.total_wagered || 0,
-        averageMultiplier: stats?.average_multiplier || 0,
-        highestMultiplier: stats?.highest_multiplier || 0,
-      };
+      if (error) {
+        console.error('Error loading current round:', error);
+        return;
+      }
+
+      if (roundData && roundData.length > 0) {
+        const round = roundData[0];
+        this.currentRound = {
+          roundId: round.round_id,
+          roundNumber: round.round_number,
+          phase: round.phase as GamePhase,
+          multiplier: round.multiplier || 1.0,
+          timeElapsed: 0,
+          bettingTimeLeft: 0,
+          crashMultiplier: round.crash_multiplier,
+          totalBets: round.total_bets || 0,
+          totalWagered: Number(round.total_wagered) || 0,
+          activePlayers: 0,
+          serverSeedHash: round.server_seed_hash,
+          clientSeed: round.client_seed,
+          nonce: round.nonce,
+          startedAt: new Date(round.betting_started_at || Date.now()),
+          bettingEndsAt: round.betting_ended_at
+            ? new Date(round.betting_ended_at)
+            : undefined,
+        };
+
+        console.log(
+          `📊 Loaded current round: ${this.currentRound.roundNumber} (${this.currentRound.phase})`
+        );
+      }
     } catch (error) {
-      console.error('Error fetching game stats:', error);
-      return {
-        totalRounds: 0,
-        totalPlayers: 0,
-        totalWagered: 0,
-        averageMultiplier: 0,
-        highestMultiplier: 0,
-      };
+      console.error('Failed to load current round:', error);
     }
   }
 
-  // Start a new game round
-  public async startNewRound(): Promise<void> {
+  private startGameLoop() {
+    if (this.isRunning) return;
+
+    this.isRunning = true;
+    console.log('🔄 Starting game loop...');
+
+    this.processGameCycle();
+  }
+
+  private async processGameCycle() {
     try {
-      // Generate seeds for this round
-      const seeds = await this.generateSeeds();
+      if (!this.currentRound || this.currentRound.phase === GamePhase.CRASHED) {
+        await this.startNewRound();
+      } else {
+        await this.continueCurrentRound();
+      }
+    } catch (error) {
+      console.error('Error in game cycle:', error);
+    }
 
-      // Calculate crash point
-      const crashMultiplier = GameEngine.calculateCrashPoint(
-        seeds.serverSeed,
-        seeds.clientSeed,
-        seeds.nonce
-      );
+    // Schedule next cycle
+    this.roundTimer = setTimeout(() => {
+      this.processGameCycle();
+    }, 1000); // Run every second
+  }
 
-      // Create new round in database
-      const { data: round, error } = await this.supabase
+  private async startNewRound() {
+    console.log('🆕 Starting new round...');
+
+    try {
+      // Clear any existing timers
+      this.clearAllTimers();
+
+      const supabase = getSupabaseAdmin();
+
+      // Generate new round data with provably fair seeds
+      const serverSeed = randomBytes(32).toString('hex');
+      const serverSeedHash = createHash('sha256')
+        .update(serverSeed)
+        .digest('hex');
+      const clientSeed = randomBytes(16).toString('hex');
+      const nonce = Math.floor(Math.random() * 1000000);
+
+      // Get next round number
+      const { data: lastRound } = await supabase
+        .from('game_rounds')
+        .select('round_number')
+        .order('round_number', { ascending: false })
+        .limit(1)
+        .single();
+
+      const nextRoundNumber = (lastRound?.round_number || 0) + 1;
+
+      // Create new round
+      const { data: newRound, error } = await supabase
         .from('game_rounds')
         .insert({
-          crash_multiplier: crashMultiplier,
-          crash_time_ms: this.calculateCrashTime(crashMultiplier),
-          server_seed: seeds.serverSeed,
-          server_seed_hash: seeds.serverSeedHash,
-          client_seed: seeds.clientSeed,
-          nonce: seeds.nonce,
+          round_number: nextRoundNumber,
+          phase: GamePhase.BETTING,
+          server_seed: serverSeed,
+          server_seed_hash: serverSeedHash,
+          client_seed: clientSeed,
+          nonce,
           betting_started_at: new Date().toISOString(),
-          betting_ended_at: new Date(
-            Date.now() + GAME_CONFIG.BETTING_DURATION_MS
-          ).toISOString(),
-          flight_started_at: new Date(
-            Date.now() + GAME_CONFIG.BETTING_DURATION_MS
-          ).toISOString(),
-          crashed_at: new Date(
-            Date.now() +
-              GAME_CONFIG.BETTING_DURATION_MS +
-              this.calculateCrashTime(crashMultiplier)
-          ).toISOString(),
+          betting_ended_at: new Date(Date.now() + 10000).toISOString(), // 10 seconds betting
+          total_bets: 0,
+          total_wagered: 0,
         })
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error creating new round:', error);
+        return;
+      }
 
-      // Initialize game state
-      this.currentState = {
-        roundId: round.id,
-        roundNumber: round.round_number,
+      this.currentRound = {
+        roundId: newRound.id,
+        roundNumber: newRound.round_number,
         phase: GamePhase.BETTING,
         multiplier: 1.0,
         timeElapsed: 0,
-        bettingTimeLeft: GAME_CONFIG.BETTING_DURATION_MS,
-        crashMultiplier,
+        bettingTimeLeft: 10000,
         totalBets: 0,
         totalWagered: 0,
         activePlayers: 0,
-        serverSeed: seeds.serverSeed,
-        serverSeedHash: seeds.serverSeedHash,
-        clientSeed: seeds.clientSeed,
-        nonce: seeds.nonce,
-        startedAt: new Date(),
-        bettingEndsAt: new Date(Date.now() + GAME_CONFIG.BETTING_DURATION_MS),
+        serverSeedHash,
+        clientSeed,
+        nonce,
+        startedAt: new Date(newRound.betting_started_at),
+        bettingEndsAt: new Date(newRound.betting_ended_at),
       };
 
-      // Clear previous bets
-      this.activeBets.clear();
-
-      // Cache initial state
-      await CacheManager.cacheGameRound(round.id, {
-        id: round.id,
-        roundNumber: round.round_number,
-        crashMultiplier,
-        phase: GamePhase.BETTING,
+      // Cache the new round
+      await CacheManager.setGameState({
+        roundId: this.currentRound.roundId,
+        roundNumber: this.currentRound.roundNumber,
+        phase: this.currentRound.phase,
+        multiplier: this.currentRound.multiplier,
+        timeElapsed: this.currentRound.timeElapsed,
+        bettingTimeLeft: this.currentRound.bettingTimeLeft,
         totalBets: 0,
         totalWagered: 0,
+        activePlayers: 0,
+        serverSeedHash,
+        clientSeed,
+        nonce,
+        startedAt: this.currentRound.startedAt.toISOString(),
+        bettingEndsAt: this.currentRound.bettingEndsAt?.toISOString(),
       });
 
-      // Start betting phase
-      this.startBettingPhase();
-
-      console.log(
-        `🎮 New round started: ${round.id} (crash at ${crashMultiplier}x)`
-      );
+      console.log(`🎯 New round ${nextRoundNumber} started (betting phase)`);
     } catch (error) {
       console.error('Failed to start new round:', error);
-      throw error;
     }
   }
 
-  // Calculate crash time based on multiplier
-  private calculateCrashTime(crashMultiplier: number): number {
-    // Exponential growth: multiplier = 1.0024^(time/10)
-    // Solving for time: time = log(multiplier) / log(1.0024) * 10
-    const timeMs = (Math.log(crashMultiplier) / Math.log(1.0024)) * 10;
+  private async continueCurrentRound() {
+    if (!this.currentRound) return;
 
-    return Math.max(
-      GAME_CONFIG.MIN_FLIGHT_DURATION_MS,
-      Math.min(GAME_CONFIG.MAX_FLIGHT_DURATION_MS, Math.floor(timeMs))
-    );
-  }
+    const now = new Date();
 
-  // Start betting phase
-  private startBettingPhase(): void {
-    if (!this.currentState) return;
+    switch (this.currentRound.phase) {
+      case GamePhase.BETTING:
+        if (
+          this.currentRound.bettingEndsAt &&
+          now >= this.currentRound.bettingEndsAt
+        ) {
+          await this.startFlight();
+        } else if (this.currentRound.bettingEndsAt) {
+          this.currentRound.bettingTimeLeft = Math.max(
+            0,
+            this.currentRound.bettingEndsAt.getTime() - now.getTime()
+          );
+        }
+        break;
 
-    this.currentState.phase = GamePhase.BETTING;
-    this.broadcastState();
-
-    // Countdown timer for betting phase
-    const bettingInterval = setInterval(() => {
-      if (!this.currentState) {
-        clearInterval(bettingInterval);
-        return;
-      }
-
-      this.currentState.bettingTimeLeft = Math.max(
-        0,
-        this.currentState.bettingEndsAt.getTime() - Date.now()
-      );
-
-      this.broadcastState();
-
-      // End betting phase when time runs out
-      if (this.currentState.bettingTimeLeft <= 0) {
-        clearInterval(bettingInterval);
-        this.startFlightPhase();
-      }
-    }, 100); // Update every 100ms for smooth countdown
-  }
-
-  // Start flight phase
-  private startFlightPhase(): void {
-    if (!this.currentState) return;
-
-    this.currentState.phase = GamePhase.FLYING;
-    this.currentState.multiplier = 1.0;
-    this.currentState.timeElapsed = 0;
-
-    const flightStartTime = Date.now();
-    const crashTime = this.calculateCrashTime(
-      this.currentState.crashMultiplier
-    );
-
-    this.broadcastState();
-
-    // Flight animation loop
-    const flightInterval = setInterval(() => {
-      if (!this.currentState) {
-        clearInterval(flightInterval);
-        return;
-      }
-
-      this.currentState.timeElapsed = Date.now() - flightStartTime;
-
-      // Calculate current multiplier using exponential growth
-      this.currentState.multiplier = Math.pow(
-        1.0024,
-        this.currentState.timeElapsed / 10
-      );
-
-      // Process auto-cashouts
-      this.processAutoCashouts();
-
-      this.broadcastState();
-
-      // Check if we should crash
-      if (this.currentState.timeElapsed >= crashTime) {
-        clearInterval(flightInterval);
-        this.crashRound();
-      }
-    }, 50); // Update every 50ms for smooth animation
-  }
-
-  // Process auto-cashouts during flight
-  private async processAutoCashouts(): Promise<void> {
-    if (!this.currentState) return;
-
-    const currentMultiplier = this.currentState.multiplier;
-
-    for (const [userId, bet] of this.activeBets.entries()) {
-      if (
-        !bet.cashedOut &&
-        bet.autoCashout &&
-        currentMultiplier >= bet.autoCashout
-      ) {
-        await this.cashoutPlayer(userId, bet.autoCashout);
-      }
+      case GamePhase.FLYING:
+        await this.updateFlight();
+        break;
     }
   }
 
-  // Crash the round and process results
-  private async crashRound(): Promise<void> {
-    if (!this.currentState) return;
+  private async startFlight() {
+    if (!this.currentRound) return;
 
-    this.currentState.phase = GamePhase.CRASHED;
-    this.currentState.multiplier = this.currentState.crashMultiplier;
-    this.currentState.crashedAt = new Date();
-
-    this.broadcastState();
+    console.log(
+      `🚀 Starting flight for round ${this.currentRound.roundNumber}`
+    );
 
     try {
-      // Process all remaining bets as losses
-      const losers: GameRoundResult['losers'] = [];
-      const winners: GameRoundResult['winners'] = [];
+      const supabase = getSupabaseAdmin();
 
-      for (const bet of this.activeBets.values()) {
-        if (bet.cashedOut) {
-          // Already processed as winner
-          const { data: user } = await this.supabase
-            .from('users')
-            .select('username')
-            .eq('id', bet.userId)
-            .single();
-
-          winners.push({
-            userId: bet.userId,
-            username: user?.username || 'Anonymous',
-            betAmount: bet.amount,
-            cashoutMultiplier: bet.cashoutMultiplier!,
-            payout: bet.payout,
-            profit: bet.profit,
-          });
-        } else {
-          // Process as loser
-          const { data: user } = await this.supabase
-            .from('users')
-            .select('username')
-            .eq('id', bet.userId)
-            .single();
-
-          losers.push({
-            userId: bet.userId,
-            username: user?.username || 'Anonymous',
-            betAmount: bet.amount,
-            loss: bet.amount,
-          });
-
-          // Update bet record as lost
-          await this.supabase
-            .from('bets')
-            .update({
-              cashed_out: false,
-              payout: 0,
-              profit: -bet.amount,
-            })
-            .eq('id', bet.id);
-        }
-      }
-
-      // Update round statistics
-      const totalPaidOut = winners.reduce(
-        (sum, winner) => sum + winner.payout,
-        0
+      // Generate crash multiplier using provably fair algorithm
+      const crashMultiplier = this.generateCrashMultiplier(
+        this.currentRound.serverSeedHash,
+        this.currentRound.clientSeed,
+        this.currentRound.nonce
       );
 
-      await this.supabase
+      const flightStartedAt = new Date();
+
+      // Update round in database
+      const { error } = await supabase
         .from('game_rounds')
         .update({
-          total_bets: this.currentState.totalBets,
-          total_wagered: this.currentState.totalWagered,
-          total_paid_out: totalPaidOut,
+          phase: GamePhase.FLYING,
+          flight_started_at: flightStartedAt.toISOString(),
+          crash_multiplier: crashMultiplier,
         })
-        .eq('id', this.currentState.roundId);
+        .eq('id', this.currentRound.roundId);
 
-      const result: GameRoundResult = {
-        roundId: this.currentState.roundId,
-        crashMultiplier: this.currentState.crashMultiplier,
-        totalBets: this.currentState.totalBets,
-        totalWagered: this.currentState.totalWagered,
-        totalPaidOut,
-        winners,
-        losers,
-      };
+      if (error) {
+        console.error('Error starting flight:', error);
+        return;
+      }
+
+      this.currentRound.phase = GamePhase.FLYING;
+      this.currentRound.crashMultiplier = crashMultiplier;
+      this.currentRound.timeElapsed = 0;
+      this.currentRound.bettingTimeLeft = 0;
 
       console.log(
-        `💥 Round crashed at ${this.currentState.crashMultiplier}x`,
-        result
+        `✈️ Flight started! Will crash at ${crashMultiplier.toFixed(2)}x`
       );
-
-      // Wait 3 seconds then start new round
-      setTimeout(() => {
-        this.startNewRound();
-      }, 3000);
     } catch (error) {
-      console.error('Error processing crash:', error);
+      console.error('Failed to start flight:', error);
     }
   }
 
-  // Place a bet for a player
-  public async placeBet(
-    userId: string,
-    amount: number,
-    autoCashout?: number
-  ): Promise<{ success: boolean; message: string; bet?: PlayerBet }> {
-    if (!this.currentState || this.currentState.phase !== GamePhase.BETTING) {
-      return { success: false, message: 'Betting is not currently open' };
+  private async updateFlight() {
+    if (!this.currentRound || !this.currentRound.crashMultiplier) return;
+
+    this.currentRound.timeElapsed += 1000; // Increment by 1 second
+
+    // Improved multiplier calculation for realistic growth
+    const timeInSeconds = this.currentRound.timeElapsed / 1000;
+    this.currentRound.multiplier = Math.max(
+      1.0,
+      1 + timeInSeconds * 0.1 + Math.pow(timeInSeconds / 10, 1.8)
+    );
+
+    // Round to 2 decimal places
+    this.currentRound.multiplier =
+      Math.round(this.currentRound.multiplier * 100) / 100;
+
+    // Check if we should crash
+    if (this.currentRound.multiplier >= this.currentRound.crashMultiplier) {
+      await this.crashFlight();
+      return;
     }
 
-    // Validate bet amount
-    if (
-      amount < GAME_CONFIG.MIN_BET_AMOUNT ||
-      amount > GAME_CONFIG.MAX_BET_AMOUNT
-    ) {
-      return {
-        success: false,
-        message: `Bet amount must be between $${GAME_CONFIG.MIN_BET_AMOUNT} and $${GAME_CONFIG.MAX_BET_AMOUNT}`,
-      };
-    }
-
-    // Check if user already has a bet this round
-    if (this.activeBets.has(userId)) {
-      return {
-        success: false,
-        message: 'You already have a bet in this round',
-      };
-    }
-
-    // Validate auto-cashout
-    if (autoCashout && autoCashout < GAME_CONFIG.MIN_MULTIPLIER) {
-      return {
-        success: false,
-        message: `Auto-cashout must be at least ${GAME_CONFIG.MIN_MULTIPLIER}x`,
-      };
-    }
-
-    try {
-      // Check user balance and deduct bet amount
-      const { data: user, error: userError } = await this.supabase
-        .from('users')
-        .select('balance')
-        .eq('id', userId)
-        .single();
-
-      if (userError || !user) {
-        return { success: false, message: 'User not found' };
-      }
-
-      if (user.balance < amount) {
-        return { success: false, message: 'Insufficient balance' };
-      }
-
-      // Deduct balance using the stored procedure
-      const { error: balanceError } = await this.supabase.rpc(
-        'update_user_balance',
-        {
-          p_user_id: userId,
-          p_amount: -amount,
-          p_transaction_type: 'bet',
-          p_description: `Bet for round ${this.currentState.roundId}`,
-          p_round_id: this.currentState.roundId,
-        }
-      );
-
-      if (balanceError) {
-        return { success: false, message: 'Failed to process bet' };
-      }
-
-      // Create bet record
-      const { data: bet, error: betError } = await this.supabase
-        .from('bets')
-        .insert({
-          user_id: userId,
-          round_id: this.currentState.roundId,
-          amount,
-          auto_cashout_multiplier: autoCashout,
-          cashed_out: false,
-          payout: 0,
-          profit: -amount, // Initially negative (the bet amount)
-        })
-        .select()
-        .single();
-
-      if (betError || !bet) {
-        return { success: false, message: 'Failed to create bet record' };
-      }
-
-      // Add to active bets
-      const playerBet: PlayerBet = {
-        id: bet.id,
-        userId,
-        roundId: this.currentState.roundId,
-        amount,
-        autoCashout,
-        cashedOut: false,
-        payout: 0,
-        profit: -amount,
-        createdAt: new Date(bet.created_at),
-      };
-
-      this.activeBets.set(userId, playerBet);
-
-      // Update game state
-      this.currentState.totalBets += 1;
-      this.currentState.totalWagered += amount;
-      this.currentState.activePlayers = this.activeBets.size;
-
-      // Cache bet data
-      await CacheManager.setPlayerBet(this.currentState.roundId, userId, {
-        amount,
-        autoCashout,
-        cashedOut: false,
-        timestamp: Date.now(),
-      });
-
-      this.broadcastState();
-
-      return {
-        success: true,
-        message: 'Bet placed successfully',
-        bet: playerBet,
-      };
-    } catch (error) {
-      console.error('Error placing bet:', error);
-      return { success: false, message: 'Internal server error' };
-    }
+    // Update cache with current multiplier
+    await CacheManager.setGameState({
+      roundId: this.currentRound.roundId,
+      roundNumber: this.currentRound.roundNumber,
+      phase: this.currentRound.phase,
+      multiplier: this.currentRound.multiplier,
+      timeElapsed: this.currentRound.timeElapsed,
+      bettingTimeLeft: 0,
+      crashMultiplier: this.currentRound.crashMultiplier,
+      totalBets: this.currentRound.totalBets,
+      totalWagered: this.currentRound.totalWagered,
+      activePlayers: this.currentRound.activePlayers,
+      serverSeedHash: this.currentRound.serverSeedHash,
+      clientSeed: this.currentRound.clientSeed,
+      nonce: this.currentRound.nonce,
+      startedAt: this.currentRound.startedAt.toISOString(),
+      bettingEndsAt: this.currentRound.bettingEndsAt?.toISOString(),
+    });
   }
 
-  // Cash out a player
-  public async cashoutPlayer(
-    userId: string,
-    multiplier?: number
-  ): Promise<{ success: boolean; message: string; payout?: number }> {
-    if (!this.currentState || this.currentState.phase !== GamePhase.FLYING) {
-      return { success: false, message: 'Cannot cash out at this time' };
-    }
+  private async crashFlight() {
+    if (!this.currentRound) return;
 
-    const bet = this.activeBets.get(userId);
-    if (!bet || bet.cashedOut) {
-      return { success: false, message: 'No active bet found' };
-    }
-
-    const cashoutMultiplier = multiplier || this.currentState.multiplier;
-    const payout = bet.amount * cashoutMultiplier;
-    const profit = payout - bet.amount;
+    console.log(
+      `💥 Flight crashed at ${this.currentRound.crashMultiplier?.toFixed(2)}x`
+    );
 
     try {
-      // Credit user balance
-      const { error: balanceError } = await this.supabase.rpc(
-        'update_user_balance',
-        {
-          p_user_id: userId,
-          p_amount: payout,
-          p_transaction_type: 'win',
-          p_description: `Cashout at ${cashoutMultiplier.toFixed(2)}x`,
-          p_round_id: this.currentState.roundId,
-        }
-      );
+      const supabase = getSupabaseAdmin();
 
-      if (balanceError) {
-        return { success: false, message: 'Failed to process cashout' };
-      }
+      const crashedAt = new Date();
 
-      // Update bet record
-      await this.supabase
-        .from('bets')
+      // Update round in database
+      const { error } = await supabase
+        .from('game_rounds')
         .update({
-          cashed_out: true,
-          cashout_multiplier: cashoutMultiplier,
-          cashout_time_ms: this.currentState.timeElapsed,
-          payout,
-          profit,
+          phase: GamePhase.CRASHED,
+          crashed_at: crashedAt.toISOString(),
         })
-        .eq('id', bet.id);
+        .eq('id', this.currentRound.roundId);
 
-      // Update local bet state
-      bet.cashedOut = true;
-      bet.cashoutMultiplier = cashoutMultiplier;
-      bet.cashoutTime = this.currentState.timeElapsed;
-      bet.payout = payout;
-      bet.profit = profit;
+      if (error) {
+        console.error('Error crashing flight:', error);
+        return;
+      }
 
-      // Update cache
-      await CacheManager.setPlayerBet(this.currentState.roundId, userId, {
-        ...bet,
-        cashedOut: true,
-        cashoutMultiplier,
-        payout,
-        profit,
-      });
+      this.currentRound.phase = GamePhase.CRASHED;
+      this.currentRound.multiplier = this.currentRound.crashMultiplier!;
 
-      console.log(
-        `💰 Player ${userId} cashed out at ${cashoutMultiplier.toFixed(
-          2
-        )}x for $${payout.toFixed(2)}`
+      // Process any remaining auto-cashouts
+      await this.processAutoCashouts();
+
+      console.log(`🏁 Round ${this.currentRound.roundNumber} completed`);
+    } catch (error) {
+      console.error('Failed to crash flight:', error);
+    }
+  }
+
+  private async processAutoCashouts() {
+    if (!this.currentRound || !this.currentRound.crashMultiplier) return;
+
+    try {
+      const supabase = getSupabaseAdmin();
+
+      // Get all uncashed bets with auto-cashout set for this round
+      const { data: bets, error } = await supabase
+        .from('bets')
+        .select('*')
+        .eq('round_id', this.currentRound.roundId)
+        .eq('cashed_out', false)
+        .not('auto_cashout', 'is', null)
+        .lte('auto_cashout', this.currentRound.crashMultiplier);
+
+      if (error) {
+        console.error('Error fetching auto-cashout bets:', error);
+        return;
+      }
+
+      // Process each auto-cashout
+      for (const bet of bets || []) {
+        if (
+          bet.auto_cashout &&
+          bet.auto_cashout <= this.currentRound.crashMultiplier
+        ) {
+          await supabase.rpc('process_cashout', {
+            p_user_id: bet.user_id,
+            p_bet_id: bet.id,
+            p_multiplier: bet.auto_cashout,
+          });
+
+          console.log(
+            `🤖 Auto-cashed out bet ${bet.id} at ${bet.auto_cashout}x`
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Failed to process auto-cashouts:', error);
+    }
+  }
+
+  private generateCrashMultiplier(
+    serverSeedHash: string,
+    clientSeed: string,
+    nonce: number
+  ): number {
+    // Provably fair crash multiplier generation
+    const combined = `${serverSeedHash}:${clientSeed}:${nonce}`;
+    const hash = createHash('sha256').update(combined).digest('hex');
+
+    // Convert first 8 characters to number
+    const seed = Number.parseInt(hash.substring(0, 8), 16);
+    const normalized = seed / 0xffffffff;
+
+    // Generate crash multiplier with house edge (~1%)
+    const houseEdge = 0.01;
+    let crashPoint = (1 - houseEdge) / (1 - normalized);
+
+    // Ensure minimum crash point and cap at reasonable maximum
+    crashPoint = Math.max(1.0, Math.min(crashPoint, 1000));
+
+    // Round to 2 decimal places
+    return Math.round(crashPoint * 100) / 100;
+  }
+
+  private clearAllTimers() {
+    if (this.roundTimer) {
+      clearTimeout(this.roundTimer);
+      this.roundTimer = null;
+    }
+    if (this.multiplierTimer) {
+      clearTimeout(this.multiplierTimer);
+      this.multiplierTimer = null;
+    }
+    if (this.bettingTimer) {
+      clearTimeout(this.bettingTimer);
+      this.bettingTimer = null;
+    }
+  }
+
+  public async getGameStatistics() {
+    try {
+      const supabase = getSupabaseAdmin();
+
+      const { data: statsData, error } = await supabase.rpc(
+        'get_game_statistics'
       );
 
-      return { success: true, message: 'Cashed out successfully', payout };
+      if (error) {
+        console.error('Error fetching game statistics:', error);
+        return null;
+      }
+
+      const stats = statsData && statsData.length > 0 ? statsData[0] : null;
+      if (!stats) return null;
+
+      return {
+        totalRounds: Number(stats.total_rounds),
+        totalPlayers: Number(stats.total_players),
+        totalWagered: Number(stats.total_wagered),
+        averageMultiplier: Number(stats.average_multiplier),
+        highestMultiplier: Number(stats.highest_multiplier),
+      };
     } catch (error) {
-      console.error('Error processing cashout:', error);
-      return { success: false, message: 'Internal server error' };
+      console.error('Failed to get game statistics:', error);
+      return null;
     }
   }
 
-  // Get current game state
-  public getCurrentState(): GameState | null {
-    return this.currentState;
+  public getCurrentRound(): GameState | null {
+    return this.currentRound;
   }
 
-  // Get active bets for current round
-  public getActiveBets(): PlayerBet[] {
-    return Array.from(this.activeBets.values());
+  public stop() {
+    this.isRunning = false;
+    this.clearAllTimers();
+    console.log('🛑 Game engine stopped');
   }
+}
 
-  // Stop the game engine
-  public stop(): void {
-    if (this.gameTimer) {
-      clearTimeout(this.gameTimer);
-      this.gameTimer = null;
-    }
-    this.subscribers.clear();
-    this.activeBets.clear();
-    this.currentState = null;
+// Singleton instance
+let gameEngineInstance: GameEngine | null = null;
+
+export function getGameEngine(): GameEngine {
+  if (!gameEngineInstance) {
+    gameEngineInstance = new GameEngine();
   }
+  return gameEngineInstance;
 }

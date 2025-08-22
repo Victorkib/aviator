@@ -12,9 +12,9 @@ export async function GET(_request: NextRequest) {
 
     const supabase = getSupabaseAdmin();
 
-    // Get active round information
+    // Get current game state
     const { data: roundData, error: roundError } = await supabase.rpc(
-      'get_active_round'
+      'get_current_game_state'
     );
 
     if (roundError) {

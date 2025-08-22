@@ -1,7 +1,12 @@
 import type { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
 import DiscordProvider from 'next-auth/providers/discord';
-import { getSupabaseAdmin } from './supabase';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -15,110 +20,52 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, user, account }) {
-      // Save user info to token on first sign in
-      if (user && account) {
-        token.id = user.id;
-        token.provider = account.provider;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      // Send properties to the client
-      if (token && session.user) {
-        session.user.id = token.id as string;
-
-        try {
-          // Get user data from our custom users table
-          const supabaseAdmin = getSupabaseAdmin();
-          const { data: userData } = await supabaseAdmin
-            .from('users')
-            .select('username, balance, status')
-            .eq('email', session.user.email)
-            .single();
-
-          if (userData) {
-            session.user.username = userData.username;
-            session.user.balance = userData.balance;
-            session.user.status = userData.status;
-          }
-        } catch (error) {
-          console.error('Error fetching user data:', error);
-          // Continue without user data if there's an error
-        }
-      }
-      return session;
-    },
     async signIn({ user, account, profile }) {
-      // Remove unused parameters warning
-      const _account = account;
-      const _profile = profile;
-
-      if (!user.email) return false;
-
       try {
-        const supabaseAdmin = getSupabaseAdmin();
-
-        // Check if user exists in our custom table
-        const { data: existingUser } = await supabaseAdmin
-          .from('users')
-          .select('id, email')
-          .eq('email', user.email)
-          .single();
-
-        if (!existingUser) {
-          // Create new user
-          const username = user.email
-            .split('@')[0]
-            .toLowerCase()
-            .replace(/[^a-z0-9]/g, '');
-
-          const { error: userError } = await supabaseAdmin
-            .from('users')
-            .insert({
-              email: user.email,
-              username: username,
-              display_name: user.name || username,
-              avatar_url: user.image,
-              email_verified: true,
-              balance: 100.0,
-              status: 'active',
-            });
-
-          if (userError) {
-            console.error('Error creating user:', userError);
-            return false;
-          }
-
-          // Add welcome bonus transaction
-          const { data: newUser } = await supabaseAdmin
-            .from('users')
-            .select('id')
-            .eq('email', user.email)
-            .single();
-
-          if (newUser) {
-            await supabaseAdmin.from('transactions').insert({
-              user_id: newUser.id,
-              type: 'bonus',
-              amount: 100.0,
-              balance_before: 0.0,
-              balance_after: 100.0,
-              description: 'Welcome bonus',
-              status: 'completed',
-            });
-          }
-        } else {
-          // Update existing user
-          await supabaseAdmin
-            .from('users')
-            .update({
-              display_name: user.name,
-              avatar_url: user.image,
-              last_login_at: new Date().toISOString(),
-            })
-            .eq('email', user.email);
+        if (!user.email || !account) {
+          console.error('Missing email or account information');
+          return false;
         }
+
+        // Create external ID from provider and provider account ID
+        const externalId = `${account.provider}_${account.providerAccountId}`;
+
+        console.log('SignIn attempt:', {
+          email: user.email,
+          externalId,
+          provider: account.provider,
+          providerAccountId: account.providerAccountId,
+        });
+
+        // Call our database function to find or create user
+        const { data: userId, error } = await supabase.rpc(
+          'find_or_create_user_by_external_id',
+          {
+            p_external_id: externalId,
+            p_email: user.email,
+            p_display_name: user.name || null,
+            p_avatar_url: user.image || null,
+          }
+        );
+
+        if (error) {
+          console.error('Database error during sign in:', error);
+          return false;
+        }
+
+        if (!userId) {
+          console.error('No user ID returned from database function');
+          return false;
+        }
+
+        // Store the UUID for use in JWT and session
+        user.id = userId;
+
+        console.log('User signed in successfully:', {
+          uuid: userId,
+          email: user.email,
+          externalId,
+        });
 
         return true;
       } catch (error) {
@@ -126,13 +73,50 @@ export const authOptions: NextAuthOptions = {
         return false;
       }
     },
+    async jwt({ token, user, account }) {
+      // Persist the OAuth account info and user UUID to the token
+      if (account && user) {
+        token.userId = user.id;
+        token.externalId = `${account.provider}_${account.providerAccountId}`;
+        token.provider = account.provider;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      // Send properties to the client
+      if (token.userId) {
+        session.user.id = token.userId as string;
+        session.user.externalId = token.externalId as string;
+        session.user.provider = token.provider as string;
+
+        // Optionally fetch fresh user data from database
+        try {
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('username, balance, status, display_name')
+            .eq('id', token.userId)
+            .single();
+
+          if (!error && userData) {
+            session.user.username = userData.username;
+            session.user.balance = Number(userData.balance);
+            session.user.status = userData.status;
+            session.user.displayName = userData.display_name;
+          }
+        } catch (error) {
+          console.error('Error fetching user data for session:', error);
+          // Continue without fresh data
+        }
+      }
+      return session;
+    },
   },
   pages: {
     signIn: '/auth/signin',
     error: '/auth/error',
   },
   session: {
-    strategy: 'jwt', // Use JWT instead of database sessions
+    strategy: 'jwt',
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   secret: process.env.NEXTAUTH_SECRET,

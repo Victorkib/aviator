@@ -1,498 +1,625 @@
 import { Server as SocketIOServer } from 'socket.io';
+import { getSupabaseAdmin } from '@/lib/supabase';
+import { CacheManager } from '@/lib/redis';
 import type { Server as HTTPServer } from 'http';
-import { CacheManager } from './redis';
-import { getSupabaseAdmin } from './supabase';
+import type { NextApiRequest, NextApiResponse } from 'next';
+import type { Socket as NetSocket } from 'net';
 
-export interface GameState {
+interface SocketServer extends HTTPServer {
+  io?: SocketIOServer;
+}
+
+interface SocketWithIO extends NetSocket {
+  server: SocketServer;
+}
+
+interface NextApiResponseWithSocket extends NextApiResponse {
+  socket: SocketWithIO;
+}
+
+// Game state management
+interface GameState {
   roundId: string;
+  roundNumber: number;
   phase: 'betting' | 'flying' | 'crashed' | 'preparing';
   multiplier: number;
-  timeElapsed: number;
-  bettingTimeLeft: number;
+  crashMultiplier?: number;
+  startTime: number;
+  bettingEndTime?: number;
+  flightStartTime?: number;
+  crashTime?: number;
   totalBets: number;
   totalWagered: number;
-  activePlayers: number;
+  activeBets: Map<string, any>;
 }
 
-export interface PlayerBet {
-  userId: string;
-  username: string;
-  amount: number;
-  autoCashout?: number;
-  cashedOut: boolean;
-  cashoutMultiplier?: number;
-  [key: string]: unknown; // Add index signature for Redis compatibility
+// Database types - Fixed to match actual Supabase query structure
+interface UserRecord {
+  name: string | null;
+  email: string | null;
 }
 
-export class GameWebSocketServer {
+interface ChatMessageRecord {
+  id: string;
+  message: string;
+  created_at: string;
+  users: UserRecord | null; // Changed from UserRecord[] to UserRecord | null
+}
+
+class GameEngine {
+  private gameState: GameState;
   private io: SocketIOServer;
-  private currentGameState: GameState;
-  private activeBets: Map<string, PlayerBet> = new Map();
-  private gameInterval: NodeJS.Timeout | null = null;
+  private gameTimer: NodeJS.Timeout | null = null;
+  private multiplierTimer: NodeJS.Timeout | null = null;
+  private supabase = getSupabaseAdmin();
 
-  constructor(server: HTTPServer) {
-    this.io = new SocketIOServer(server, {
+  constructor(io: SocketIOServer) {
+    this.io = io;
+    this.gameState = this.initializeGameState();
+    this.startGameLoop();
+  }
+
+  private initializeGameState(): GameState {
+    return {
+      roundId: this.generateRoundId(),
+      roundNumber: 1,
+      phase: 'preparing',
+      multiplier: 1.0,
+      startTime: Date.now(),
+      totalBets: 0,
+      totalWagered: 0,
+      activeBets: new Map(),
+    };
+  }
+
+  private generateRoundId(): string {
+    return `round_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private async startGameLoop() {
+    try {
+      await this.startBettingPhase();
+    } catch (error) {
+      console.error('Game loop error:', error);
+      // Restart game loop after error
+      setTimeout(() => this.startGameLoop(), 5000);
+    }
+  }
+
+  private async startBettingPhase() {
+    console.log(
+      `🎮 Starting betting phase for round ${this.gameState.roundNumber}`
+    );
+
+    this.gameState.phase = 'betting';
+    this.gameState.startTime = Date.now();
+    this.gameState.bettingEndTime = Date.now() + 10000; // 10 seconds betting
+    this.gameState.activeBets.clear();
+    this.gameState.totalBets = 0;
+    this.gameState.totalWagered = 0;
+
+    // Create new round in database
+    try {
+      const { data, error } = await this.supabase
+        .from('game_rounds')
+        .insert({
+          round_number: this.gameState.roundNumber,
+          phase: 'betting',
+          betting_started_at: new Date().toISOString(),
+          server_seed_hash: this.generateServerSeed(),
+          client_seed: 'client_seed_' + Date.now(),
+          nonce: this.gameState.roundNumber,
+          total_bets: 0,
+          total_wagered: 0,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error creating game round:', error);
+      } else if (data) {
+        this.gameState.roundId = data.id;
+        console.log(
+          `✅ Created round ${data.round_number} with ID: ${data.id}`
+        );
+      }
+    } catch (error) {
+      console.error('Database error creating round:', error);
+    }
+
+    // Broadcast game state
+    this.broadcastGameState();
+
+    // Set timer for flight phase
+    this.gameTimer = setTimeout(() => {
+      this.startFlightPhase();
+    }, 10000); // 10 seconds betting time
+  }
+
+  private async startFlightPhase() {
+    console.log(
+      `🚀 Starting flight phase for round ${this.gameState.roundNumber}`
+    );
+
+    this.gameState.phase = 'flying';
+    this.gameState.flightStartTime = Date.now();
+    this.gameState.multiplier = 1.0;
+
+    // Generate crash point (between 1.01x and 50x with house edge)
+    const crashMultiplier = this.generateCrashMultiplier();
+    this.gameState.crashMultiplier = crashMultiplier;
+
+    console.log(`💥 Crash point set at ${crashMultiplier.toFixed(2)}x`);
+
+    // Update round in database
+    try {
+      await this.supabase
+        .from('game_rounds')
+        .update({
+          phase: 'flying',
+          betting_ended_at: new Date().toISOString(),
+          flight_started_at: new Date().toISOString(),
+          crash_multiplier: crashMultiplier,
+          total_bets: this.gameState.totalBets,
+          total_wagered: this.gameState.totalWagered,
+        })
+        .eq('id', this.gameState.roundId);
+    } catch (error) {
+      console.error('Database error updating round:', error);
+    }
+
+    // Broadcast flight start
+    this.io.emit('flight_started', {
+      roundId: this.gameState.roundId,
+      roundNumber: this.gameState.roundNumber,
+      crashMultiplier: crashMultiplier,
+      timestamp: Date.now(),
+    });
+
+    // Start multiplier animation
+    this.startMultiplierAnimation(crashMultiplier);
+  }
+
+  private startMultiplierAnimation(crashMultiplier: number) {
+    const startTime = Date.now();
+
+    const updateMultiplier = () => {
+      const elapsed = Date.now() - startTime;
+
+      // Calculate current multiplier based on elapsed time
+      // Multiplier grows exponentially over time
+      const currentMultiplier =
+        1 + (elapsed / 1000) * 0.1 + Math.pow(elapsed / 10000, 2);
+      this.gameState.multiplier = Math.round(currentMultiplier * 100) / 100;
+
+      // Check if we've reached the crash point
+      if (this.gameState.multiplier >= crashMultiplier) {
+        this.crashGame();
+        return;
+      }
+
+      // Broadcast current multiplier
+      this.io.emit('multiplier_update', {
+        multiplier: this.gameState.multiplier,
+        timestamp: Date.now(),
+      });
+
+      // Process auto cashouts
+      this.processAutoCashouts();
+
+      // Schedule next update
+      this.multiplierTimer = setTimeout(updateMultiplier, 50); // Update every 50ms for smooth animation
+    };
+
+    updateMultiplier();
+  }
+
+  private async crashGame() {
+    console.log(
+      `💥 Game crashed at ${this.gameState.crashMultiplier?.toFixed(2)}x`
+    );
+
+    this.gameState.phase = 'crashed';
+    this.gameState.crashTime = Date.now();
+    this.gameState.multiplier = this.gameState.crashMultiplier!;
+
+    // Clear multiplier timer
+    if (this.multiplierTimer) {
+      clearTimeout(this.multiplierTimer);
+      this.multiplierTimer = null;
+    }
+
+    // Update round in database
+    try {
+      await this.supabase
+        .from('game_rounds')
+        .update({
+          phase: 'crashed',
+          crashed_at: new Date().toISOString(),
+          crash_time_ms: Date.now() - this.gameState.flightStartTime!,
+        })
+        .eq('id', this.gameState.roundId);
+
+      // Process any remaining bets as losses
+      await this.processRemainingBets();
+    } catch (error) {
+      console.error('Database error updating crashed round:', error);
+    }
+
+    // Broadcast crash
+    this.io.emit('game_crashed', {
+      crashMultiplier: this.gameState.crashMultiplier,
+      roundId: this.gameState.roundId,
+      timestamp: Date.now(),
+    });
+
+    // Wait 3 seconds then start new round
+    setTimeout(() => {
+      this.gameState.roundNumber++;
+      this.gameState.roundId = this.generateRoundId();
+      this.startGameLoop();
+    }, 3000);
+  }
+
+  private async processAutoCashouts() {
+    for (const [userId, bet] of this.gameState.activeBets) {
+      if (
+        bet.autoCashout &&
+        this.gameState.multiplier >= bet.autoCashout &&
+        !bet.cashedOut
+      ) {
+        try {
+          await this.processCashout(userId, bet.id, bet.autoCashout);
+          console.log(
+            `🤖 Auto-cashout processed for user ${userId} at ${bet.autoCashout}x`
+          );
+        } catch (error) {
+          console.error('Error processing auto-cashout:', error);
+        }
+      }
+    }
+  }
+
+  private async processRemainingBets() {
+    for (const [userId, bet] of this.gameState.activeBets) {
+      if (!bet.cashedOut) {
+        // Mark bet as lost
+        try {
+          await this.supabase
+            .from('bets')
+            .update({
+              cashed_out: false,
+              profit: -bet.amount,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', bet.id);
+        } catch (error) {
+          console.error('Error updating lost bet:', error);
+        }
+      }
+    }
+  }
+
+  private generateCrashMultiplier(): number {
+    // Simple crash generation with house edge
+    // This is a basic implementation - in production you'd want provably fair generation
+    const random = Math.random();
+
+    if (random < 0.01) return 1.01; // 1% chance of instant crash
+    if (random < 0.05) return 1.01 + Math.random() * 0.5; // 4% chance of very low crash
+    if (random < 0.2) return 1.5 + Math.random() * 1.5; // 15% chance of low crash
+    if (random < 0.6) return 2.0 + Math.random() * 3.0; // 40% chance of medium crash
+    if (random < 0.9) return 5.0 + Math.random() * 10.0; // 30% chance of high crash
+
+    return 10.0 + Math.random() * 40.0; // 10% chance of very high crash
+  }
+
+  private generateServerSeed(): string {
+    return (
+      'seed_' + Date.now() + '_' + Math.random().toString(36).substr(2, 16)
+    );
+  }
+
+  private broadcastGameState() {
+    const state = {
+      roundId: this.gameState.roundId,
+      roundNumber: this.gameState.roundNumber,
+      phase: this.gameState.phase,
+      multiplier: this.gameState.multiplier,
+      totalBets: this.gameState.totalBets,
+      totalWagered: this.gameState.totalWagered,
+      timeLeft: this.getTimeLeft(),
+      timestamp: Date.now(),
+    };
+
+    this.io.emit('game_state', state);
+
+    // Cache the state
+    CacheManager.setGameState(state);
+  }
+
+  private getTimeLeft(): number {
+    if (this.gameState.phase === 'betting' && this.gameState.bettingEndTime) {
+      return Math.max(0, this.gameState.bettingEndTime - Date.now());
+    }
+    return 0;
+  }
+
+  // Public methods for handling socket events
+  async placeBet(userId: string, amount: number, autoCashout?: number) {
+    if (this.gameState.phase !== 'betting') {
+      throw new Error('Betting is closed');
+    }
+
+    try {
+      // Validate bet using database function
+      const { data: validation, error: validationError } =
+        await this.supabase.rpc('validate_bet_placement', {
+          p_user_id: userId, // This will be a UUID now
+          p_round_id: this.gameState.roundId,
+          p_amount: amount,
+          p_auto_cashout: autoCashout,
+        });
+
+      if (validationError || !validation?.[0]?.is_valid) {
+        throw new Error(
+          validation?.[0]?.error_message || 'Bet validation failed'
+        );
+      }
+
+      // Update user balance first
+      const { data: balanceResult, error: balanceError } =
+        await this.supabase.rpc('update_user_balance', {
+          p_user_id: userId, // This will be a UUID now
+          p_amount: -amount,
+          p_transaction_type: 'bet',
+          p_description: `Bet for round #${this.gameState.roundNumber}`,
+          p_round_id: this.gameState.roundId,
+        });
+
+      if (balanceError || !balanceResult?.[0]?.success) {
+        throw new Error(
+          balanceResult?.[0]?.error_message || 'Failed to deduct balance'
+        );
+      }
+
+      // Create bet record
+      const { data: bet, error: betError } = await this.supabase
+        .from('bets')
+        .insert({
+          user_id: userId,
+          round_id: this.gameState.roundId,
+          amount: amount,
+          auto_cashout: autoCashout,
+          cashed_out: false,
+          payout: 0,
+          profit: -amount,
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (betError) {
+        // Rollback balance if bet creation failed
+        await this.supabase.rpc('update_user_balance', {
+          p_user_id: userId,
+          p_amount: amount,
+          p_transaction_type: 'refund',
+          p_description: 'Bet creation failed - refund',
+          p_round_id: this.gameState.roundId,
+        });
+        throw new Error('Failed to create bet');
+      }
+
+      // Add to active bets
+      this.gameState.activeBets.set(userId, {
+        id: bet.id,
+        amount: amount,
+        autoCashout: autoCashout,
+        cashedOut: false,
+      });
+
+      this.gameState.totalBets++;
+      this.gameState.totalWagered += amount;
+
+      // Update round stats in database
+      await this.supabase
+        .from('game_rounds')
+        .update({
+          total_bets: this.gameState.totalBets,
+          total_wagered: this.gameState.totalWagered,
+        })
+        .eq('id', this.gameState.roundId);
+
+      // Broadcast updated state
+      this.broadcastGameState();
+
+      return { success: true, betId: bet.id };
+    } catch (error) {
+      console.error('Error placing bet:', error);
+      throw error;
+    }
+  }
+
+  async processCashout(userId: string, betId: string, multiplier: number) {
+    try {
+      const { data, error } = await this.supabase.rpc('process_cashout', {
+        p_user_id: userId, // This will be a UUID now
+        p_bet_id: betId,
+        p_multiplier: multiplier,
+      });
+
+      if (error || !data?.[0]?.success) {
+        throw new Error(data?.[0]?.error_message || 'Cashout failed');
+      }
+
+      // Update active bet
+      const bet = this.gameState.activeBets.get(userId);
+      if (bet) {
+        bet.cashedOut = true;
+        bet.cashoutMultiplier = multiplier;
+        bet.payout = data[0].payout;
+      }
+
+      // Broadcast cashout
+      this.io.emit('user_cashed_out', {
+        userId,
+        betId,
+        multiplier,
+        payout: data[0].payout,
+        profit: data[0].profit,
+      });
+
+      return { success: true, payout: data[0].payout, profit: data[0].profit };
+    } catch (error) {
+      console.error('Error processing cashout:', error);
+      throw error;
+    }
+  }
+
+  getGameState() {
+    return {
+      roundId: this.gameState.roundId,
+      roundNumber: this.gameState.roundNumber,
+      phase: this.gameState.phase,
+      multiplier: this.gameState.multiplier,
+      totalBets: this.gameState.totalBets,
+      totalWagered: this.gameState.totalWagered,
+      timeLeft: this.getTimeLeft(),
+    };
+  }
+
+  stop() {
+    if (this.gameTimer) {
+      clearTimeout(this.gameTimer);
+      this.gameTimer = null;
+    }
+    if (this.multiplierTimer) {
+      clearTimeout(this.multiplierTimer);
+      this.multiplierTimer = null;
+    }
+    console.log('🛑 Game engine stopped');
+  }
+}
+
+export function initializeSocketServer(
+  req: NextApiRequest,
+  res: NextApiResponseWithSocket
+) {
+  if (!res.socket.server.io) {
+    console.log('🚀 Initializing Socket.IO server...');
+
+    const io = new SocketIOServer(res.socket.server, {
+      path: '/api/socket',
+      addTrailingSlash: false,
       cors: {
         origin:
           process.env.NODE_ENV === 'production'
-            ? ['https://your-domain.vercel.app']
-            : ['http://localhost:3000'],
+            ? process.env.NEXTAUTH_URL
+            : 'http://localhost:3000',
         methods: ['GET', 'POST'],
       },
     });
 
-    this.currentGameState = {
-      roundId: '',
-      phase: 'preparing',
-      multiplier: 1.0,
-      timeElapsed: 0,
-      bettingTimeLeft: 0,
-      totalBets: 0,
-      totalWagered: 0,
-      activePlayers: 0,
-    };
+    // Initialize game engine
+    const gameEngine = new GameEngine(io);
 
-    this.setupEventHandlers();
-    this.startGameLoop();
-  }
+    io.on('connection', (socket) => {
+      console.log('👤 User connected:', socket.id);
 
-  private setupEventHandlers() {
-    this.io.on('connection', (socket) => {
-      console.log('Player connected:', socket.id);
+      // Send current game state to new connection
+      socket.emit('game_state', gameEngine.getGameState());
 
-      // Send current game state immediately
-      socket.emit('game-state', this.currentGameState);
-      socket.emit('active-bets', Array.from(this.activeBets.values()));
-
-      // Handle player bet
-      socket.on(
-        'place-bet',
-        async (data: {
-          userId: string;
-          amount: number;
-          autoCashout?: number;
-        }) => {
-          try {
-            await this.handlePlayerBet(socket, data);
-          } catch {
-            socket.emit('bet-error', { message: 'Failed to place bet' });
-          }
+      // Handle bet placement
+      socket.on('place_bet', async (data) => {
+        try {
+          const { userId, amount, autoCashout } = data;
+          const result = await gameEngine.placeBet(userId, amount, autoCashout);
+          socket.emit('bet_placed', result);
+        } catch (error) {
+          socket.emit('bet_error', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
         }
-      );
+      });
 
       // Handle cashout
-      socket.on('cashout', async (data: { userId: string }) => {
+      socket.on('cashout', async (data) => {
         try {
-          await this.handleCashout(socket, data);
-        } catch {
-          socket.emit('cashout-error', { message: 'Failed to cashout' });
+          const { userId, betId, multiplier } = data;
+          const result = await gameEngine.processCashout(
+            userId,
+            betId,
+            multiplier
+          );
+          socket.emit('cashout_success', result);
+        } catch (error) {
+          socket.emit('cashout_error', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
         }
       });
 
       // Handle chat messages
-      socket.on(
-        'chat-message',
-        async (data: { userId: string; message: string }) => {
-          try {
-            await this.handleChatMessage(data);
-          } catch {
-            socket.emit('chat-error', { message: 'Failed to send message' });
+      socket.on('chat_message', async (data) => {
+        try {
+          const { userId, message } = data;
+
+          // Save to database
+          const supabase = getSupabaseAdmin();
+          const { data: chatMessage, error } = await supabase
+            .from('chat_messages')
+            .insert({
+              user_id: userId, // This will be a UUID now
+              message: message.trim().substring(0, 500), // Limit message length
+            })
+            .select(
+              `
+              id,
+              message,
+              created_at,
+              users (
+                name,
+                email
+              )
+            `
+            )
+            .single();
+
+          if (error) {
+            socket.emit('chat_error', { error: 'Failed to send message' });
+            return;
           }
+
+          // Type assertion with proper structure
+          const typedChatMessage = chatMessage as unknown as ChatMessageRecord;
+
+          // Broadcast to all clients
+          io.emit('chat_message', {
+            id: typedChatMessage.id,
+            message: typedChatMessage.message,
+            user: {
+              name:
+                typedChatMessage.users?.name ||
+                typedChatMessage.users?.email?.split('@')[0] ||
+                'Anonymous',
+              email: typedChatMessage.users?.email,
+            },
+            timestamp: typedChatMessage.created_at,
+          });
+        } catch (error) {
+          socket.emit('chat_error', { error: 'Failed to send message' });
         }
-      );
+      });
 
       socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
+        console.log('👤 User disconnected:', socket.id);
       });
     });
+
+    res.socket.server.io = io;
+    console.log('✅ Socket.IO server initialized');
   }
 
-  private async handlePlayerBet(
-    socket: unknown,
-    data: { userId: string; amount: number; autoCashout?: number }
-  ) {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Validate betting phase
-    if (this.currentGameState.phase !== 'betting') {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'bet-error',
-        { message: 'Betting is closed' }
-      );
-      return;
-    }
-
-    // Check if user already has a bet
-    if (this.activeBets.has(data.userId)) {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'bet-error',
-        {
-          message: 'You already have an active bet',
-        }
-      );
-      return;
-    }
-
-    // Validate bet amount and user balance
-    const { data: user } = await supabaseAdmin
-      .from('users')
-      .select('balance, username')
-      .eq('id', data.userId)
-      .single();
-
-    if (!user || user.balance < data.amount) {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'bet-error',
-        {
-          message: 'Insufficient balance',
-        }
-      );
-      return;
-    }
-
-    // Deduct balance and create bet record
-    const { error } = await supabaseAdmin.rpc('update_user_balance', {
-      p_user_id: data.userId,
-      p_amount: -data.amount,
-      p_transaction_type: 'bet',
-      p_description: `Bet for round ${this.currentGameState.roundId}`,
-      p_round_id: this.currentGameState.roundId,
-    });
-
-    if (error) {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'bet-error',
-        {
-          message: 'Failed to process bet',
-        }
-      );
-      return;
-    }
-
-    // Add to active bets
-    const playerBet: PlayerBet = {
-      userId: data.userId,
-      username: user.username || 'Anonymous',
-      amount: data.amount,
-      autoCashout: data.autoCashout,
-      cashedOut: false,
-    };
-
-    this.activeBets.set(data.userId, playerBet);
-
-    // Update game state
-    this.currentGameState.totalBets += 1;
-    this.currentGameState.totalWagered += data.amount;
-    this.currentGameState.activePlayers = this.activeBets.size;
-
-    // Broadcast updates
-    this.io.emit('game-state', this.currentGameState);
-    this.io.emit('new-bet', playerBet);
-    (socket as { emit: (event: string, data: unknown) => void }).emit(
-      'bet-confirmed',
-      playerBet
-    );
-
-    // Cache in Redis using the fixed method - now playerBet has index signature
-    await CacheManager.setPlayerBet(
-      this.currentGameState.roundId,
-      data.userId,
-      playerBet
-    );
-  }
-
-  private async handleCashout(socket: unknown, data: { userId: string }) {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Validate flying phase
-    if (this.currentGameState.phase !== 'flying') {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'cashout-error',
-        {
-          message: 'Cannot cashout now',
-        }
-      );
-      return;
-    }
-
-    const playerBet = this.activeBets.get(data.userId);
-    if (!playerBet || playerBet.cashedOut) {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'cashout-error',
-        {
-          message: 'No active bet found',
-        }
-      );
-      return;
-    }
-
-    // Calculate payout
-    const payout = playerBet.amount * this.currentGameState.multiplier;
-    const profit = payout - playerBet.amount;
-
-    // Update bet record
-    playerBet.cashedOut = true;
-    playerBet.cashoutMultiplier = this.currentGameState.multiplier;
-
-    // Credit user balance
-    const { error } = await supabaseAdmin.rpc('update_user_balance', {
-      p_user_id: data.userId,
-      p_amount: payout,
-      p_transaction_type: 'win',
-      p_description: `Cashout at ${this.currentGameState.multiplier}x`,
-      p_round_id: this.currentGameState.roundId,
-    });
-
-    if (error) {
-      (socket as { emit: (event: string, data: unknown) => void }).emit(
-        'cashout-error',
-        {
-          message: 'Failed to process cashout',
-        }
-      );
-      return;
-    }
-
-    // Update bet in database
-    await supabaseAdmin
-      .from('bets')
-      .update({
-        cashed_out: true,
-        cashout_multiplier: this.currentGameState.multiplier,
-        cashout_time_ms: this.currentGameState.timeElapsed,
-        payout: payout,
-        profit: profit,
-      })
-      .eq('user_id', data.userId)
-      .eq('round_id', this.currentGameState.roundId);
-
-    // Broadcast cashout
-    this.io.emit('player-cashout', {
-      userId: data.userId,
-      username: playerBet.username,
-      multiplier: this.currentGameState.multiplier,
-      payout: payout,
-    });
-    (socket as { emit: (event: string, data: unknown) => void }).emit(
-      'cashout-success',
-      {
-        multiplier: this.currentGameState.multiplier,
-        payout: payout,
-        profit: profit,
-      }
-    );
-
-    // Update Redis using the fixed method - now playerBet has index signature
-    await CacheManager.setPlayerBet(
-      this.currentGameState.roundId,
-      data.userId,
-      playerBet
-    );
-  }
-
-  private async handleChatMessage(data: { userId: string; message: string }) {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Get user info
-    const { data: user } = await supabaseAdmin
-      .from('users')
-      .select('username, display_name')
-      .eq('id', data.userId)
-      .single();
-
-    if (!user) return;
-
-    // Save to database
-    const { data: chatMessage } = await supabaseAdmin
-      .from('chat_messages')
-      .insert({
-        user_id: data.userId,
-        message: data.message.substring(0, 500), // Limit message length
-      })
-      .select()
-      .single();
-
-    if (chatMessage) {
-      // Broadcast to all clients
-      this.io.emit('chat-message', {
-        id: chatMessage.id,
-        username: user.username || user.display_name || 'Anonymous',
-        message: data.message,
-        timestamp: chatMessage.created_at,
-      });
-    }
-  }
-
-  private startGameLoop() {
-    this.scheduleNextRound();
-  }
-
-  private async scheduleNextRound() {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    // Generate new round
-    const roundId = crypto.randomUUID();
-    const serverSeed = crypto.randomUUID();
-    const clientSeed = 'client_seed_' + Date.now();
-    const nonce = Math.floor(Math.random() * 1000000);
-
-    // Calculate crash point
-    const { data: crashPoint } = await supabaseAdmin.rpc(
-      'calculate_crash_point',
-      {
-        p_server_seed: serverSeed,
-        p_client_seed: clientSeed,
-        p_nonce: nonce,
-      }
-    );
-
-    this.currentGameState = {
-      roundId,
-      phase: 'betting',
-      multiplier: 1.0,
-      timeElapsed: 0,
-      bettingTimeLeft: 10000, // 10 seconds
-      totalBets: 0,
-      totalWagered: 0,
-      activePlayers: 0,
-    };
-
-    this.activeBets.clear();
-
-    // Create round in database
-    const bettingStartTime = new Date();
-    const bettingEndTime = new Date(bettingStartTime.getTime() + 10000);
-    const flightStartTime = new Date(bettingEndTime.getTime());
-    const crashTime = new Date(flightStartTime.getTime() + crashPoint * 1000);
-
-    await supabaseAdmin.from('game_rounds').insert({
-      id: roundId,
-      crash_multiplier: crashPoint,
-      crash_time_ms: crashPoint * 1000,
-      server_seed: serverSeed,
-      server_seed_hash: await this.hashSeed(serverSeed),
-      client_seed: clientSeed,
-      nonce: nonce,
-      betting_started_at: bettingStartTime.toISOString(),
-      betting_ended_at: bettingEndTime.toISOString(),
-      flight_started_at: flightStartTime.toISOString(),
-      crashed_at: crashTime.toISOString(),
-    });
-
-    // Broadcast new round
-    this.io.emit('new-round', this.currentGameState);
-
-    // Start betting countdown
-    this.startBettingPhase(crashPoint);
-  }
-
-  private startBettingPhase(crashPoint: number) {
-    const bettingDuration = 10000; // 10 seconds
-    const startTime = Date.now();
-
-    const bettingInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      this.currentGameState.bettingTimeLeft = Math.max(
-        0,
-        bettingDuration - elapsed
-      );
-
-      this.io.emit('betting-update', {
-        timeLeft: this.currentGameState.bettingTimeLeft,
-      });
-
-      if (elapsed >= bettingDuration) {
-        clearInterval(bettingInterval);
-        this.startFlightPhase(crashPoint);
-      }
-    }, 100); // Update every 100ms
-  }
-
-  private startFlightPhase(crashPoint: number) {
-    this.currentGameState.phase = 'flying';
-    this.currentGameState.multiplier = 1.0;
-    this.currentGameState.timeElapsed = 0;
-
-    const flightStartTime = Date.now();
-
-    const flightInterval = setInterval(() => {
-      const elapsed = Date.now() - flightStartTime;
-      this.currentGameState.timeElapsed = elapsed;
-
-      // Calculate current multiplier (exponential growth)
-      this.currentGameState.multiplier = Math.pow(1.0024, elapsed / 10); // Grows ~1% every 100ms
-
-      // Check for auto-cashouts
-      this.processAutoCashouts();
-
-      // Broadcast multiplier update
-      this.io.emit('multiplier-update', {
-        multiplier: this.currentGameState.multiplier,
-        timeElapsed: elapsed,
-      });
-
-      // Check if we should crash
-      if (this.currentGameState.multiplier >= crashPoint) {
-        clearInterval(flightInterval);
-        this.crashRound(crashPoint);
-      }
-    }, 50); // Update every 50ms for smooth animation
-  }
-
-  private async processAutoCashouts() {
-    // const supabaseAdmin = getSupabaseAdmin();
-
-    for (const [userId, bet] of this.activeBets.entries()) {
-      if (
-        !bet.cashedOut &&
-        bet.autoCashout &&
-        this.currentGameState.multiplier >= bet.autoCashout
-      ) {
-        // Auto cashout this player
-        await this.handleCashout({ emit: () => {} }, { userId });
-      }
-    }
-  }
-
-  private async crashRound(crashPoint: number) {
-    const supabaseAdmin = getSupabaseAdmin();
-
-    this.currentGameState.phase = 'crashed';
-    this.currentGameState.multiplier = crashPoint;
-
-    // Broadcast crash
-    this.io.emit('game-crashed', {
-      crashMultiplier: crashPoint,
-      roundId: this.currentGameState.roundId,
-    });
-
-    // Process losing bets (players who didn't cash out)
-    for (const [userId, bet] of this.activeBets.entries()) {
-      if (!bet.cashedOut) {
-        // Update bet as lost
-        await supabaseAdmin
-          .from('bets')
-          .update({
-            cashed_out: false,
-            payout: 0,
-            profit: -bet.amount,
-          })
-          .eq('user_id', userId)
-          .eq('round_id', this.currentGameState.roundId);
-      }
-    }
-
-    // Wait 3 seconds then start next round
-    setTimeout(() => {
-      this.scheduleNextRound();
-    }, 3000);
-  }
-
-  private async hashSeed(seed: string): Promise<string> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(seed);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
+  res.end();
 }

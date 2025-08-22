@@ -1,64 +1,138 @@
 'use client';
 
 import type React from 'react';
-
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { MessageCircle, Send, Trophy, AlertCircle } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { 
+  MessageCircle, 
+  Send, 
+  Wifi, 
+  WifiOff, 
+  Users, 
+  Crown, 
+  Shield, 
+  Star, 
+  Zap, 
+  Plane,
+  Target,
+  DollarSign,
+  TrendingUp,
+  Smile,
+  Lock,
+  Settings
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ChatPersistence } from './chat-persistence';
+import { ChatMessage } from './chat-message';
+import { ChatCommands } from './chat-commands';
+import { useSession } from 'next-auth/react';
 
 interface ChatMessage {
   id: string;
-  username: string;
   message: string;
+  user: {
+    id: string;
+    name: string;
+    email?: string;
+    avatarUrl?: string;
+  };
   timestamp: string;
-  type: 'chat' | 'system' | 'win_announcement' | 'bet_placed';
-  avatar?: string;
-  amount?: number;
-  multiplier?: number;
+  type?: 'message' | 'system' | 'bet' | 'cashout' | 'crash';
+  userRole?: 'user' | 'vip' | 'moderator' | 'admin';
 }
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSendMessage: (message: string) => void;
-  currentUser: {
-    username: string;
-    avatar?: string;
-  };
-  isDemo?: boolean;
+  isConnected: boolean;
+  onlineUsers?: number;
 }
+
+const QUICK_REACTIONS = [
+  { emoji: '🚀', label: 'Rocket' },
+  { emoji: '💥', label: 'Crash' },
+  { emoji: '💰', label: 'Money' },
+  { emoji: '🎯', label: 'Target' },
+  { emoji: '🔥', label: 'Fire' },
+  { emoji: '👑', label: 'Crown' },
+];
 
 export function ChatPanel({
   messages,
   onSendMessage,
-  currentUser,
-  isDemo = false,
+  isConnected,
+  onlineUsers = 0,
 }: ChatPanelProps) {
+  const { data: session } = useSession();
   const [newMessage, setNewMessage] = useState('');
+  const [allMessages, setAllMessages] = useState<ChatMessage[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [showReactions, setShowReactions] = useState(false);
+  const [showCommands, setShowCommands] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Handle messages loaded from database
+  const handleMessagesLoaded = useCallback((loadedMessages: ChatMessage[]) => {
+    console.log(`Chat history loaded: ${loadedMessages.length} messages`);
+    setAllMessages(loadedMessages);
+    setIsLoadingHistory(false);
+  }, []);
+
+  // Handle new messages from Socket.IO
+  const handleNewMessage = useCallback((message: ChatMessage) => {
+    console.log('New message received:', message.id);
+    setAllMessages((prev) => {
+      // Avoid duplicates
+      if (prev.some((msg) => msg.id === message.id)) {
+        return prev;
+      }
+      // Add new message and keep last 100 messages
+      return [...prev, message].slice(-100);
+    });
+  }, []);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [allMessages]);
 
-  const handleSendMessage = () => {
-    if (newMessage.trim() && newMessage.length <= 200) {
-      onSendMessage(newMessage.trim());
-      setNewMessage('');
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!newMessage.trim() || !isConnected || !session) return;
+
+    const messageText = newMessage.trim();
+    setNewMessage('');
+
+    try {
+      // Send via Socket.IO for real-time delivery and database persistence
+      onSendMessage(messageText);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      // Restore message if there was an error
+      setNewMessage(messageText);
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
+  const handleQuickReaction = (emoji: string) => {
+    if (!session) return;
+    onSendMessage(emoji);
+    setShowReactions(false);
+  };
+
+  const handleCommand = (command: string) => {
+    setNewMessage(command);
+    setShowCommands(false);
+    inputRef.current?.focus();
   };
 
   const formatTime = (timestamp: string) => {
@@ -68,160 +142,246 @@ export function ChatPanel({
     });
   };
 
-  const getMessageIcon = (type: ChatMessage['type']) => {
-    switch (type) {
-      case 'win_announcement':
-        return <Trophy className="h-3 w-3 text-yellow-500" />;
-      case 'system':
-        return <AlertCircle className="h-3 w-3 text-blue-500" />;
-      case 'bet_placed':
-        return <MessageCircle className="h-3 w-3 text-green-500" />;
+  const getDisplayName = (user: { name: string; email?: string }) => {
+    return user.name || user.email?.split('@')[0] || 'Anonymous';
+  };
+
+  const isOwnMessage = (message: ChatMessage) => {
+    return (
+      session?.user?.id === message.user.id ||
+      session?.user?.email === message.user.email
+    );
+  };
+
+  const getUserRoleIcon = (role?: string) => {
+    switch (role) {
+      case 'admin':
+        return <Crown className="h-3 w-3 text-red-400" />;
+      case 'moderator':
+        return <Shield className="h-3 w-3 text-blue-400" />;
+      case 'vip':
+        return <Star className="h-3 w-3 text-yellow-400" />;
       default:
         return null;
     }
   };
 
-  const getMessageStyle = (type: ChatMessage['type']) => {
+  const getMessageTypeStyle = (type?: string) => {
     switch (type) {
       case 'system':
-        return 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200';
-      case 'win_announcement':
-        return 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-800 dark:text-yellow-200';
-      case 'bet_placed':
-        return 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-800 dark:text-green-200';
+        return 'bg-blue-500/20 border-blue-500/30 text-blue-200';
+      case 'bet':
+        return 'bg-green-500/20 border-green-500/30 text-green-200';
+      case 'cashout':
+        return 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200';
+      case 'crash':
+        return 'bg-red-500/20 border-red-500/30 text-red-200';
       default:
-        return 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white';
+        return 'bg-slate-700/50 border-slate-600/30 text-slate-200';
+    }
+  };
+
+  const getMessageTypeIcon = (type?: string) => {
+    switch (type) {
+      case 'system':
+        return <Zap className="h-3 w-3" />;
+      case 'bet':
+        return <Target className="h-3 w-3" />;
+      case 'cashout':
+        return <DollarSign className="h-3 w-3" />;
+      case 'crash':
+        return <TrendingUp className="h-3 w-3" />;
+      default:
+        return null;
     }
   };
 
   return (
-    <Card className="w-full h-[400px] bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between text-gray-900 dark:text-white">
-          <span className="flex items-center gap-2">
-            <MessageCircle className="h-5 w-5" />
-            Chat
-          </span>
-          {isDemo && (
-            <Badge
-              variant="secondary"
-              className="bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200"
-            >
-              Demo
-            </Badge>
-          )}
-        </CardTitle>
-      </CardHeader>
+    <>
+      {/* Chat Persistence Component - handles database integration */}
+      <ChatPersistence
+        onMessagesLoaded={handleMessagesLoaded}
+        onNewMessage={handleNewMessage}
+        socketMessages={messages}
+      />
 
-      <CardContent className="p-0 flex flex-col h-[320px]">
-        {/* Messages Area */}
-        <ScrollArea className="flex-1 px-4" ref={scrollAreaRef}>
-          <div className="space-y-3 pb-4">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`p-3 rounded-lg border ${getMessageStyle(
-                  message.type
-                )} transition-colors`}
-              >
-                <div className="flex items-start space-x-2">
-                  {message.type === 'chat' && (
-                    <Avatar className="h-6 w-6 mt-0.5">
-                      <AvatarImage
-                        src={
-                          message.avatar ||
-                          `https://api.dicebear.com/7.x/avataaars/svg?seed=${message.username}`
-                        }
-                      />
-                      <AvatarFallback className="bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 text-xs">
-                        {message.username.slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                  )}
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2 mb-1">
-                      {getMessageIcon(message.type)}
-                      <span className="font-medium text-sm truncate">
-                        {message.type === 'system'
-                          ? 'System'
-                          : message.username}
-                      </span>
-                      <span className="text-xs opacity-60">
-                        {formatTime(message.timestamp)}
-                      </span>
-                    </div>
-
-                    <div className="text-sm break-words">
-                      {message.type === 'win_announcement' &&
-                      message.amount &&
-                      message.multiplier ? (
-                        <span>
-                          Won{' '}
-                          <span className="font-bold text-green-600 dark:text-green-400">
-                            ${message.amount.toFixed(2)}
-                          </span>{' '}
-                          at{' '}
-                          <span className="font-bold">
-                            {message.multiplier.toFixed(2)}x
-                          </span>
-                          ! 🎉
-                        </span>
-                      ) : message.type === 'bet_placed' && message.amount ? (
-                        <span>
-                          Placed a{' '}
-                          <span className="font-bold">
-                            ${message.amount.toFixed(2)}
-                          </span>{' '}
-                          bet
-                        </span>
-                      ) : (
-                        message.message
-                      )}
-                    </div>
-                  </div>
-                </div>
+      <div className="h-full flex flex-col">
+        {/* Enhanced Header */}
+        <div className="flex items-center justify-between p-3 bg-gradient-to-r from-blue-600/20 to-purple-600/20 border-b border-blue-500/30">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <MessageCircle className="h-5 w-5 text-blue-400" />
+              <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+            </div>
+            <div>
+              <h3 className="text-blue-200 font-semibold text-sm">Live Chat</h3>
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Users className="h-3 w-3" />
+                <span>{onlineUsers} online</span>
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
               </div>
-            ))}
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowCommands(!showCommands)}
+              className="h-8 w-8 p-0 text-slate-400 hover:text-slate-200"
+              title="Chat commands"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Messages Area */}
+        <ScrollArea className="flex-1 p-3" ref={scrollAreaRef}>
+          <div className="space-y-3">
+            {isLoadingHistory ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-center text-slate-400 text-sm py-8"
+              >
+                <div className="relative">
+                  <Plane className="h-8 w-8 mx-auto mb-2 opacity-50 animate-bounce" />
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-400/20 to-transparent animate-pulse"></div>
+                </div>
+                <p>Loading chat history...</p>
+              </motion.div>
+            ) : allMessages.length === 0 ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-center text-slate-400 text-sm py-8"
+              >
+                <Plane className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No messages yet</p>
+                <p className="text-xs mt-1">Be the first to say something!</p>
+              </motion.div>
+            ) : (
+              <AnimatePresence>
+                {allMessages.map((message, index) => (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    isOwnMessage={isOwnMessage(message)}
+                    onReaction={handleQuickReaction}
+                  />
+                ))}
+              </AnimatePresence>
+            )}
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
 
-        {/* Message Input */}
-        <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-          <div className="flex space-x-2">
-            <div className="flex-1">
-              <Input
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder={
-                  isDemo ? 'Chat disabled in demo mode' : 'Type a message...'
-                }
-                disabled={isDemo}
-                maxLength={200}
-                className="bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white"
-              />
-              <div className="flex justify-between items-center mt-1">
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  {currentUser.username}
-                </span>
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  {newMessage.length}/200
-                </span>
+        {/* Enhanced Input Area */}
+        <div className="p-3 bg-slate-800/30 border-t border-slate-600/30 relative">
+          {!session ? (
+            <div className="text-center py-4">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <Lock className="h-4 w-4 text-amber-400" />
+                <span className="text-sm text-amber-400">Authentication Required</span>
               </div>
+              <p className="text-xs text-slate-400">Please sign in to participate in chat</p>
             </div>
-            <Button
-              onClick={handleSendMessage}
-              disabled={!newMessage.trim() || newMessage.length > 200 || isDemo}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-            >
-              <Send className="h-4 w-4" />
-            </Button>
-          </div>
+          ) : (
+            <>
+              <form onSubmit={handleSendMessage} className="flex gap-2 mb-2">
+                <div className="flex-1 relative">
+                  <Input
+                    ref={inputRef}
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    placeholder={
+                      !isConnected
+                        ? 'Connecting to chat...'
+                        : 'Type your message... (Press / for commands)'
+                    }
+                    disabled={!isConnected}
+                    maxLength={500}
+                    className="bg-slate-700/50 border-slate-600/50 text-white placeholder:text-slate-400 text-sm pr-20"
+                  />
+                  
+                  {/* Quick Reactions Button */}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowReactions(!showReactions)}
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 h-6 w-6 p-0 text-slate-400 hover:text-slate-200"
+                  >
+                    <Smile className="h-3 w-3" />
+                  </Button>
+                </div>
+                
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!isConnected || !newMessage.trim()}
+                  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-4"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </form>
+
+              {/* Chat Commands */}
+              <AnimatePresence>
+                {showCommands && (
+                  <ChatCommands
+                    onCommand={handleCommand}
+                    onClose={() => setShowCommands(false)}
+                  />
+                )}
+              </AnimatePresence>
+
+              {/* Quick Reactions Panel */}
+              <AnimatePresence>
+                {showReactions && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="bg-slate-700/50 rounded-lg p-2 mb-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-400">Quick reactions:</span>
+                      {QUICK_REACTIONS.map((reaction) => (
+                        <button
+                          key={reaction.emoji}
+                          onClick={() => handleQuickReaction(reaction.emoji)}
+                          className="text-lg hover:scale-125 transition-transform"
+                          title={reaction.label}
+                        >
+                          {reaction.emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Character Counter and Status */}
+              <div className="flex items-center justify-between text-xs">
+                <div className="text-slate-400">
+                  {newMessage.length}/500 characters
+                </div>
+                <div className="flex items-center gap-2">
+                  {!isConnected && (
+                    <div className="flex items-center gap-1 text-amber-400">
+                      <WifiOff className="h-3 w-3" />
+                      <span>Disconnected</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </>
   );
 }
