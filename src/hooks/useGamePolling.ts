@@ -45,12 +45,15 @@ export function useGamePolling(enabled = false) {
 
           setGameState({
             roundId: round.id,
+            roundNumber: round.round_number || 1,
             phase,
             multiplier,
+            startTime: flightStart.getTime(),
             timeElapsed,
             bettingTimeLeft: Math.max(0, bettingEnd.getTime() - now.getTime()),
             totalBets: round.total_bets || 0,
             totalWagered: round.total_wagered || 0,
+            activeBets: new Map(),
             activePlayers: 0, // Would need separate query
           });
         }

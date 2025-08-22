@@ -23,16 +23,19 @@ export async function rateLimit(
   const config = RATE_LIMITS[action];
 
   const result = await CacheManager.checkRateLimit(
-    ip,
-    action,
+    `${ip}:${action}`,
     config.requests,
     config.window
   );
 
+  // Since checkRateLimit returns a boolean, we need to calculate remaining and resetTime
+  const now = Date.now();
+  const resetTime = now + (config.window * 1000);
+  
   return {
-    success: result.allowed,
-    remaining: result.remaining,
-    resetTime: result.resetTime,
+    success: result,
+    remaining: result ? config.requests - 1 : 0, // Approximate remaining
+    resetTime: resetTime,
   };
 }
 

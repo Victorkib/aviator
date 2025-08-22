@@ -34,6 +34,7 @@ interface ChatMessageProps {
       multiplier?: number;
       payout?: number;
       achievement?: string;
+      autoCashout?: number;
     };
   };
   isOwnMessage: boolean;

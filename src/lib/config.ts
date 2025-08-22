@@ -165,7 +165,7 @@ export async function healthCheck() {
   try {
     // Check Redis connection
     const { CacheManager } = await import('./redis');
-    checks.redis = await CacheManager.healthCheck();
+    checks.redis = await CacheManager.ping();
   } catch (error) {
     console.error('Redis health check failed:', error);
   }

@@ -18,7 +18,7 @@ interface NextApiResponseWithSocket extends NextApiResponse {
 }
 
 // Game state management
-interface GameState {
+export interface GameState {
   roundId: string;
   roundNumber: number;
   phase: 'betting' | 'flying' | 'crashed' | 'preparing';
@@ -31,6 +31,9 @@ interface GameState {
   totalBets: number;
   totalWagered: number;
   activeBets: Map<string, any>;
+  timeElapsed?: number;
+  bettingTimeLeft?: number;
+  activePlayers?: number;
 }
 
 // Database types - Fixed to match actual Supabase query structure
