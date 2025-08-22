@@ -157,6 +157,7 @@ export function Navigation() {
                 </SheetTrigger>
                 <SheetContent side="right" className="w-[300px] sm:w-[400px]">
                   <div className="flex flex-col space-y-4 mt-4">
+                    <h2 className="sr-only">Navigation Menu</h2>
                     {navigationItems.map((item) => {
                       const Icon = item.icon;
                       return (

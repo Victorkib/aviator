@@ -87,6 +87,11 @@ export default async function handler(
     // Initialize Socket.IO server if not already done
     if (!res.socket.server.io) {
       console.log('🚀 Initializing Socket.IO server...');
+      console.log('🔍 Server details:', {
+        hasSocket: !!res.socket,
+        hasServer: !!res.socket.server,
+        serverType: typeof res.socket.server,
+      });
 
       const io = new SocketIOServer(res.socket.server, {
         path: '/api/socket',
@@ -94,14 +99,20 @@ export default async function handler(
         cors: {
           origin: process.env.NODE_ENV === 'production' 
             ? [
-                process.env.NEXTAUTH_URL!,
+                process.env.NEXTAUTH_URL || 'https://your-domain.com',
                 'https://*.vercel.app',
                 'https://*.vercel.com',
                 ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
-              ]
-            : ['http://localhost:3000', 'http://127.0.0.1:3000'],
-          methods: ['GET', 'POST'],
+              ].filter(Boolean)
+            : [
+                'http://localhost:3000', 
+                'http://127.0.0.1:3000',
+                'http://localhost:3001',
+                'http://127.0.0.1:3001'
+              ],
+          methods: ['GET', 'POST', 'OPTIONS'],
           credentials: true,
+          allowedHeaders: ['Content-Type', 'Authorization'],
         },
         transports: ['polling', 'websocket'],
         pingTimeout: 60000,
@@ -116,8 +127,8 @@ export default async function handler(
         cors: {
           origin:
             process.env.NODE_ENV === 'production'
-              ? [process.env.NEXTAUTH_URL!, 'https://*.vercel.app']
-              : ['http://localhost:3000', 'http://127.0.0.1:3000'],
+              ? [process.env.NEXTAUTH_URL || 'https://your-domain.com', 'https://*.vercel.app']
+              : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001'],
         },
       });
 
@@ -421,8 +432,15 @@ export default async function handler(
 
     // Send a simple response to confirm the endpoint is working
     res.status(200).json({
+      success: true,
       message: 'Socket.IO server is running',
       timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV,
+      cors: {
+        origin: process.env.NODE_ENV === 'production' 
+          ? [process.env.NEXTAUTH_URL || 'https://v0-aviator-crash-game.vercel.app', 'https://*.vercel.app']
+          : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001'],
+      },
       gameState: {
         phase: gameState.phase,
         roundNumber: gameState.roundNumber,

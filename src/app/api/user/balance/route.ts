@@ -21,7 +21,13 @@ export async function GET(request: NextRequest) {
     const cachedBalance = await CacheManager.getUserBalance(session.user.id);
     if (cachedBalance !== null) {
       return NextResponse.json({
-        balance: cachedBalance,
+        success: true,
+        data: {
+          balance: cachedBalance,
+          totalWagered: 0,
+          totalWon: 0,
+          gamesPlayed: 0,
+        },
         cached: true,
       });
     }
@@ -75,16 +81,19 @@ export async function GET(request: NextRequest) {
         }
 
         const response = {
-          balance: Number(simpleUserData.balance) || 0,
-          totalWagered: 0,
-          totalWon: 0,
-          gamesPlayed: 0,
+          success: true,
+          data: {
+            balance: Number(simpleUserData.balance) || 0,
+            totalWagered: 0,
+            totalWon: 0,
+            gamesPlayed: 0,
+          },
           cached: false,
           note: 'Limited data due to schema mismatch',
         };
 
         // Cache the balance
-        await CacheManager.setUserBalance(session.user.id, response.balance);
+        await CacheManager.setUserBalance(session.user.id, response.data.balance);
         return NextResponse.json(response);
       }
 
@@ -103,15 +112,18 @@ export async function GET(request: NextRequest) {
     }
 
     const response = {
-      balance: Number(userData.balance) || 0,
-      totalWagered: Number(userData.total_wagered) || 0,
-      totalWon: Number(userData.total_won) || 0,
-      gamesPlayed: userData.games_played || 0,
+      success: true,
+      data: {
+        balance: Number(userData.balance) || 0,
+        totalWagered: Number(userData.total_wagered) || 0,
+        totalWon: Number(userData.total_won) || 0,
+        gamesPlayed: userData.games_played || 0,
+      },
       cached: false,
     };
 
     // Cache the balance
-    await CacheManager.setUserBalance(session.user.id, response.balance);
+    await CacheManager.setUserBalance(session.user.id, response.data.balance);
 
     console.log('Balance fetched successfully:', response);
 

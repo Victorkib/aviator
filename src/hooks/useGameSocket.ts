@@ -57,6 +57,8 @@ export function useGameSocket() {
   const socketRef = useRef<Socket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const connectionAttemptRef = useRef<boolean>(false);
+  const reconnectAttemptsRef = useRef<number>(0);
+  const maxReconnectAttempts = 5;
   const [mounted, setMounted] = useState(false);
 
   const [gameState, setGameState] = useState<GameState>({
@@ -217,6 +219,7 @@ export function useGameSocket() {
           transport: newSocket.io.engine?.transport?.name,
         });
         connectionAttemptRef.current = false;
+        reconnectAttemptsRef.current = 0; // Reset reconnection attempts on successful connection
         setConnectionStatus('connected');
         setError(null);
       });
@@ -227,11 +230,17 @@ export function useGameSocket() {
         setConnectionStatus('disconnected');
 
         // Auto-reconnect after 3 seconds if not intentional disconnect
-        if (reason !== 'io client disconnect') {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log('🔄 Attempting to reconnect...');
-            connect();
-          }, 3000);
+        if (reason !== 'io client disconnect' && reason !== 'io server disconnect') {
+          if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+            reconnectTimeoutRef.current = setTimeout(() => {
+              console.log('🔄 Attempting to reconnect...');
+              reconnectAttemptsRef.current++;
+              connect();
+            }, 3000);
+          } else {
+            console.log('❌ Max reconnection attempts reached');
+            setError('Connection lost. Please refresh the page.');
+          }
         }
       });
 
@@ -469,7 +478,7 @@ export function useGameSocket() {
       const connectTimeout = setTimeout(() => {
         console.log('⏰ Attempting connection after delay...');
         connect();
-      }, 2000); // Increased delay to 2 seconds
+      }, 1000); // Reduced delay to 1 second
 
       return () => {
         console.log('🧹 Cleaning up connection timeout');
@@ -481,7 +490,7 @@ export function useGameSocket() {
     } else {
       console.log('⏳ Waiting for authentication:', { status });
     }
-  }, [mounted, status, connect, disconnect]);
+  }, [mounted, status, session?.user?.id]); // Removed connect and disconnect from dependencies to prevent infinite loops
 
   // Cleanup on unmount
   useEffect(() => {

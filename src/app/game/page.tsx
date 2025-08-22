@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
+import { ErrorBoundary } from '@/components/ui/error-boundary';
 import {
   AlertCircle,
   Wifi,
@@ -70,13 +71,17 @@ export default function GamePage() {
         const response = await fetch('/api/user/balance');
         const data = await response.json();
 
-        if (data.success) {
+        if (data.success && data.data?.balance !== undefined) {
           setUserBalance(data.data.balance);
         } else {
-          console.error('Failed to fetch balance:', data.error);
+          console.error('Failed to fetch balance:', data.error || 'Unknown error');
+          // Set a default balance to prevent UI issues
+          setUserBalance(0);
         }
       } catch (error) {
         console.error('Error fetching balance:', error);
+        // Set a default balance to prevent UI issues
+        setUserBalance(0);
       } finally {
         setIsLoadingBalance(false);
       }
@@ -292,11 +297,13 @@ export default function GamePage() {
               transition={{ delay: 0.2 }}
               className="h-[500px] relative"
             >
-              <GameCanvas
-                multiplier={gameState.multiplier}
-                phase={gameState.phase}
-                timeLeft={gameState.bettingTimeLeft}
-              />
+              <ErrorBoundary>
+                <GameCanvas
+                  multiplier={gameState.multiplier}
+                  phase={gameState.phase}
+                  timeLeft={gameState.bettingTimeLeft}
+                />
+              </ErrorBoundary>
               
               {/* Floating multiplier indicator */}
               {gameState.phase === 'flying' && (
