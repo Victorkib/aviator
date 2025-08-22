@@ -62,6 +62,20 @@ export default async function handler(
   res: NextApiResponseServerIO
 ) {
   console.log(`📡 Socket API called: ${req.method} ${req.url}`);
+  console.log('🔍 Request details:', {
+    method: req.method,
+    url: req.url,
+    headers: {
+      origin: req.headers.origin,
+      host: req.headers.host,
+      'user-agent': req.headers['user-agent'],
+    },
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      NEXTAUTH_URL: process.env.NEXTAUTH_URL,
+      VERCEL_URL: process.env.VERCEL_URL,
+    },
+  });
 
   if (req.method !== 'GET') {
     console.log('❌ Method not allowed:', req.method);
@@ -78,10 +92,14 @@ export default async function handler(
         path: '/api/socket',
         addTrailingSlash: false,
         cors: {
-          origin:
-            process.env.NODE_ENV === 'production'
-              ? [process.env.NEXTAUTH_URL!, 'https://*.vercel.app']
-              : ['http://localhost:3000', 'http://127.0.0.1:3000'],
+          origin: process.env.NODE_ENV === 'production' 
+            ? [
+                process.env.NEXTAUTH_URL!,
+                'https://*.vercel.app',
+                'https://*.vercel.com',
+                ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
+              ]
+            : ['http://localhost:3000', 'http://127.0.0.1:3000'],
           methods: ['GET', 'POST'],
           credentials: true,
         },

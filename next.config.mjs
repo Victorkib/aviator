@@ -39,6 +39,13 @@ const nextConfig = {
         tls: false,
       };
     }
+    
+    // Ensure Socket.IO works properly
+    config.externals = config.externals || [];
+    if (!isServer) {
+      config.externals.push('socket.io-client');
+    }
+    
     return config;
   },
 
