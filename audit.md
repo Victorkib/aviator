@@ -357,3 +357,140 @@ The Aviator Crash Game is now **production-ready** with all core features implem
 **Current Phase**: 5 (COMPLETE) ✅
 **Next Milestone**: Phase 6 - Advanced Game Features
 **Status**: READY FOR PRODUCTION 🎉
+
+
+
+
+okay so as per the added @audit.md could you confirm for me that we have indeed a completed phases leading upto phase 6. in that file we were illustrating some of the incomplete things in there. could you confirm for me that they are indeed completed and for the incomplete parts, could you then complete them for me in a seure manner that won't result in the overal system being compromised.
+
+
+
+okay so I am encoutering the following problems [{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "2554",
+	"severity": 8,
+	"message": "Expected 1 arguments, but got 0.",
+	"source": "ts",
+	"startLineNumber": 128,
+	"startColumn": 28,
+	"endLineNumber": 128,
+	"endColumn": 35,
+	"relatedInformation": [
+		{
+			"startLineNumber": 400,
+			"startColumn": 6,
+			"endLineNumber": 400,
+			"endColumn": 19,
+			"message": "An argument for 'betId' was not provided.",
+			"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/hooks/useGameSocket.ts"
+		}
+	],
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "18048",
+	"severity": 8,
+	"message": "'result.payout' is possibly 'undefined'.",
+	"source": "ts",
+	"startLineNumber": 131,
+	"startColumn": 41,
+	"endLineNumber": 131,
+	"endColumn": 54,
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "18048",
+	"severity": 8,
+	"message": "'result.payout' is possibly 'undefined'.",
+	"source": "ts",
+	"startLineNumber": 134,
+	"startColumn": 36,
+	"endLineNumber": 134,
+	"endColumn": 49,
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "18048",
+	"severity": 8,
+	"message": "'result.multiplier' is possibly 'undefined'.",
+	"source": "ts",
+	"startLineNumber": 134,
+	"startColumn": 67,
+	"endLineNumber": 134,
+	"endColumn": 84,
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "2322",
+	"severity": 8,
+	"message": "Type '{ id: string; user: string; amount: number; autoCashout: number; }[]' is not assignable to type 'Bet[]'.\n  Type '{ id: string; user: string; amount: number; autoCashout: number; }' is missing the following properties from type 'Bet': username, cashedOut",
+	"source": "ts",
+	"startLineNumber": 375,
+	"startColumn": 21,
+	"endLineNumber": 375,
+	"endColumn": 25,
+	"relatedInformation": [
+		{
+			"startLineNumber": 20,
+			"startColumn": 3,
+			"endLineNumber": 20,
+			"endColumn": 7,
+			"message": "The expected type comes from property 'bets' which is declared here on type 'IntrinsicAttributes & ActiveBetsProps'",
+			"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/components/game/active-bets.tsx"
+		}
+	],
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "2322",
+	"severity": 8,
+	"message": "Type '(amount: number, autoCashout?: number) => Promise<BetResult | undefined>' is not assignable to type '(amount: number, autoCashout?: number | undefined) => Promise<{ success: boolean; error?: string | undefined; }>'.\n  Type 'Promise<BetResult | undefined>' is not assignable to type 'Promise<{ success: boolean; error?: string | undefined; }>'.\n    Type 'BetResult | undefined' is not assignable to type '{ success: boolean; error?: string | undefined; }'.\n      Type 'undefined' is not assignable to type '{ success: boolean; error?: string | undefined; }'.",
+	"source": "ts",
+	"startLineNumber": 415,
+	"startColumn": 19,
+	"endLineNumber": 415,
+	"endColumn": 29,
+	"relatedInformation": [
+		{
+			"startLineNumber": 16,
+			"startColumn": 3,
+			"endLineNumber": 16,
+			"endColumn": 13,
+			"message": "The expected type comes from property 'onPlaceBet' which is declared here on type 'IntrinsicAttributes & BettingPanelProps'",
+			"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/components/game/betting-panel.tsx"
+		}
+	],
+	"modelVersionId": 1
+},{
+	"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/app/game/page.tsx",
+	"owner": "typescript",
+	"code": "2322",
+	"severity": 8,
+	"message": "Type '() => Promise<void>' is not assignable to type '(betId: string) => Promise<{ success: boolean; error?: string | undefined; }>'.\n  Type 'Promise<void>' is not assignable to type 'Promise<{ success: boolean; error?: string | undefined; }>'.\n    Type 'void' is not assignable to type '{ success: boolean; error?: string | undefined; }'.",
+	"source": "ts",
+	"startLineNumber": 416,
+	"startColumn": 19,
+	"endLineNumber": 416,
+	"endColumn": 28,
+	"relatedInformation": [
+		{
+			"startLineNumber": 20,
+			"startColumn": 3,
+			"endLineNumber": 20,
+			"endColumn": 12,
+			"message": "The expected type comes from property 'onCashout' which is declared here on type 'IntrinsicAttributes & BettingPanelProps'",
+			"resource": "/c:/Users/qinal/Desktop/qin/trucks/aviator/src/components/game/betting-panel.tsx"
+		}
+	],
+	"modelVersionId": 1
+}]
+as you fix them should the process fo fixing them require you to go to a said file and do something in there, I need you to ensure that the things you do in the other file are considerate such that they just don't fix that issue and as a result cause a chain reaction of problems. like for example previous I told you to help me upgrade the game page and its all component and yes you did that but you also introduced 'problems' so then I need you to account for any and all issues in any and all realted game logic, game display once more. And remember when you fix something ensure the fix itself is not a causality of another part failing.
+
+
+
