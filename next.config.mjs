@@ -40,10 +40,18 @@ const nextConfig = {
       };
     }
     
-    // Ensure Socket.IO works properly
-    config.externals = config.externals || [];
-    if (!isServer) {
-      config.externals.push('socket.io-client');
+    // Ensure Socket.IO works properly in both development and production
+    // Don't externalize socket.io-client - let it be bundled
+    if (config.externals && !isServer) {
+      // Remove any socket.io-client from externals if it exists
+      config.externals = config.externals.filter(
+        (external) => {
+          if (typeof external === 'string') {
+            return external !== 'socket.io-client';
+          }
+          return true;
+        }
+      );
     }
     
     return config;

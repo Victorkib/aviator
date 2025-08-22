@@ -2,7 +2,20 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSession } from 'next-auth/react';
-import { io, type Socket } from 'socket.io-client';
+
+// Safe import of socket.io-client with fallback
+let io: any;
+let SocketType: any;
+
+try {
+  const socketIO = require('socket.io-client');
+  io = socketIO.io || socketIO;
+  SocketType = socketIO.Socket;
+} catch (error) {
+  console.error('Failed to import socket.io-client:', error);
+  io = null;
+  SocketType = null;
+}
 
 interface GameState {
   roundId: string;
@@ -54,7 +67,7 @@ interface CashoutResult {
 
 export function useGameSocket() {
   const { data: session, status } = useSession();
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<any | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const connectionAttemptRef = useRef<boolean>(false);
   const reconnectAttemptsRef = useRef<number>(0);
@@ -181,6 +194,11 @@ export function useGameSocket() {
     }
 
     try {
+      // Check if io is available
+      if (!io) {
+        throw new Error('Socket.IO client not available');
+      }
+
       // Ensure we're using the correct URL
       const baseUrl =
         typeof window !== 'undefined'
@@ -224,7 +242,7 @@ export function useGameSocket() {
         setError(null);
       });
 
-      newSocket.on('disconnect', (reason) => {
+      newSocket.on('disconnect', (reason: any) => {
         console.log('❌ Socket disconnected:', reason);
         connectionAttemptRef.current = false;
         setConnectionStatus('disconnected');
@@ -244,7 +262,7 @@ export function useGameSocket() {
         }
       });
 
-      newSocket.on('connect_error', (error) => {
+      newSocket.on('connect_error', (error: any) => {
         console.error('❌ Connection error:', error);
         console.error('❌ Error details:', {
           message: error.message,
@@ -267,7 +285,7 @@ export function useGameSocket() {
             console.log('⬆️ Upgraded to', newSocket.io.engine.transport.name);
           });
 
-          newSocket.io.engine.on('upgradeError', (error) => {
+          newSocket.io.engine.on('upgradeError', (error: any) => {
             console.error('⬆️ Upgrade error:', error);
           });
         }
